@@ -1,0 +1,232 @@
+import logging
+import signal
+import sys
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+from config import Config
+from scrapers.base import JobRecord
+from processing.dedup import deduplicate
+from processing.cleaner import parse_location, parse_salary
+from enrichers.orchestrator import EnrichmentOrchestrator
+
+logger = logging.getLogger(__name__)
+
+_partial_jobs: list[JobRecord] = []
+_partial_contacts: dict = {}
+_interrupted = False
+
+
+def _handle_interrupt(sig, frame):
+    global _interrupted
+    logger.warning("Interrupted! Saving partial results...")
+    _interrupted = True
+
+
+def _run_scraper(scraper_class, config, sources_filter):
+    name = scraper_class.__name__.replace("Scraper", "").lower()
+    if sources_filter and name.replace("_", "") not in [s.replace("_", "") for s in sources_filter]:
+        logger.info(f"Skipping {name} (not in --sources filter)")
+        return []
+    try:
+        scraper = scraper_class(config)
+        return scraper.scrape_all()
+    except Exception as e:
+        logger.error(f"{scraper_class.__name__} failed: {e}")
+        return []
+
+
+def _clean_job(job: JobRecord, config: Config) -> JobRecord:
+    """Apply cleaning passes to a single job record."""
+    if job.location and (not job.location_city or not job.location_postcode):
+        city, postcode = parse_location(job.location)
+        job.location_city = job.location_city or city
+        job.location_postcode = job.location_postcode or postcode
+
+    if job.salary_text and not job.salary_min:
+        sal_min, sal_max, sal_period = parse_salary(job.salary_text)
+        job.salary_min = sal_min
+        job.salary_max = sal_max
+        job.salary_period = sal_period or job.salary_period
+
+    return job
+
+
+def run_pipeline(
+    config: Config,
+    sources_filter: list = None,
+    dry_run: bool = False,
+    resume: bool = False,
+    since_days: int = None,
+) -> dict:
+    global _partial_jobs, _partial_contacts, _interrupted
+    _interrupted = False
+
+    signal.signal(signal.SIGINT, _handle_interrupt)
+
+    run_id = str(uuid.uuid4())
+    started_at = datetime.utcnow().isoformat() + "Z"
+    errors = 0
+
+    logger.info(f"=== Nurse Jobs Scraper run {run_id} started at {started_at} ===")
+    logger.info(f"Keywords: {config.keywords}")
+    logger.info(f"Locations: {config.locations}")
+    logger.info(f"Max results per keyword: {config.max_results_per_keyword}")
+
+    # Import scrapers
+    from scrapers.nhs import NHSScraper
+    from scrapers.reed import ReedScraper
+    from scrapers.indeed import IndeedScraper
+
+    scraper_classes = [NHSScraper, ReedScraper, IndeedScraper]
+
+    # Stage 1: Run scrapers in parallel
+    logger.info("Stage 1: Running scrapers in parallel...")
+    all_raw_jobs = []
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_run_scraper, cls, config, sources_filter): cls.__name__
+            for cls in scraper_classes
+        }
+        for future in as_completed(futures):
+            if _interrupted:
+                break
+            name = futures[future]
+            try:
+                batch = future.result(timeout=300)
+                all_raw_jobs.extend(batch)
+                logger.info(f"{name}: returned {len(batch)} raw jobs")
+            except Exception as e:
+                logger.error(f"{name} future failed: {e}")
+                errors += 1
+
+    logger.info(f"Stage 1 complete: {len(all_raw_jobs)} raw jobs collected")
+
+    if not all_raw_jobs:
+        logger.warning("No jobs collected. Check network connectivity and scraper logs.")
+        return {"jobs": [], "contacts": {}, "run_id": run_id, "errors": errors}
+
+    # Stage 2: Deduplication
+    logger.info("Stage 2: Deduplicating...")
+    before_dedup = len(all_raw_jobs)
+    unique_jobs = deduplicate(all_raw_jobs)
+    duplicates_removed = before_dedup - len(unique_jobs)
+    logger.info(f"Dedup: {before_dedup} → {len(unique_jobs)} unique ({duplicates_removed} duplicates removed)")
+
+    # Stage 2b: Resume filter (skip already-seen jobs)
+    if resume:
+        from exporters.sqlite_export import get_seen_hashes
+        seen = get_seen_hashes(config.sqlite_path)
+        before_resume = len(unique_jobs)
+        unique_jobs = [j for j in unique_jobs if j._hash not in seen]
+        logger.info(f"Resume: skipped {before_resume - len(unique_jobs)} already-seen jobs")
+
+    # Stage 3: Cleaning
+    logger.info("Stage 3: Cleaning job records...")
+    unique_jobs = [_clean_job(job, config) for job in unique_jobs]
+
+    _partial_jobs = unique_jobs
+
+    if _interrupted:
+        return _save_partial(unique_jobs, {}, run_id, started_at, errors, duplicates_removed, config, dry_run)
+
+    # Stage 4: Contact enrichment
+    contacts = {}
+    if config.enrich_contacts:
+        logger.info("Stage 4: Enriching contact data...")
+        orchestrator = EnrichmentOrchestrator(config)
+        try:
+            contacts = orchestrator.enrich_batch(unique_jobs)
+        except Exception as e:
+            logger.error(f"Enrichment failed: {e}")
+            errors += 1
+    else:
+        logger.info("Stage 4: Contact enrichment skipped (--no-enrich)")
+
+    _partial_contacts = contacts
+
+    if _interrupted:
+        return _save_partial(unique_jobs, contacts, run_id, started_at, errors, duplicates_removed, config, dry_run)
+
+    # Stage 5: Export
+    from enrichers.ai_enricher import get_call_count
+    ai_calls = get_call_count()
+    finished_at = datetime.utcnow().isoformat() + "Z"
+
+    run_stats = {
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duplicates_removed": duplicates_removed,
+        "ai_calls": ai_calls,
+        "errors": errors,
+    }
+
+    if dry_run:
+        logger.info("=== DRY RUN — results not saved ===")
+        _print_summary(unique_jobs, contacts, run_stats)
+        return {"jobs": unique_jobs, "contacts": contacts, "run_id": run_id, **run_stats}
+
+    logger.info("Stage 5: Exporting results...")
+    _export_all(unique_jobs, contacts, config, run_id, run_stats)
+
+    _print_summary(unique_jobs, contacts, run_stats)
+
+    return {"jobs": unique_jobs, "contacts": contacts, "run_id": run_id, **run_stats}
+
+
+def _export_all(jobs, contacts, config, run_id, run_stats):
+    formats = config.export_formats
+    from pathlib import Path
+    Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+    if "json" in formats:
+        from exporters.json_export import export_json
+        export_json(jobs, contacts, config.output_dir)
+
+    if "csv" in formats:
+        from exporters.csv_export import export_csv
+        export_csv(jobs, contacts, config.output_dir)
+
+    if "excel" in formats:
+        from exporters.excel_export import export_excel
+        export_excel(jobs, contacts, config.output_dir, run_stats=run_stats)
+
+    if "sqlite" in formats:
+        from exporters.sqlite_export import export_sqlite
+        export_sqlite(jobs, contacts, config.sqlite_path, run_id, run_stats=run_stats)
+
+
+def _save_partial(jobs, contacts, run_id, started_at, errors, duplicates_removed, config, dry_run):
+    if dry_run or not jobs:
+        return {"jobs": jobs, "contacts": contacts, "run_id": run_id}
+    logger.info(f"Saving {len(jobs)} partial results before exit...")
+    from enrichers.ai_enricher import get_call_count
+    run_stats = {
+        "started_at": started_at,
+        "finished_at": datetime.utcnow().isoformat() + "Z",
+        "duplicates_removed": duplicates_removed,
+        "ai_calls": get_call_count(),
+        "errors": errors,
+        "partial": True,
+    }
+    _export_all(jobs, contacts, config, run_id, run_stats)
+    return {"jobs": jobs, "contacts": contacts, "run_id": run_id, **run_stats}
+
+
+def _print_summary(jobs, contacts, run_stats):
+    ai_calls = run_stats.get("ai_calls", 0)
+    jobs_with_phone = sum(1 for j in jobs if j.company and contacts.get(j.company) and contacts[j.company].phone_numbers)
+    jobs_with_email = sum(1 for j in jobs if j.company and contacts.get(j.company) and contacts[j.company].emails)
+
+    print("\n" + "=" * 60)
+    print("SCRAPER RUN SUMMARY")
+    print("=" * 60)
+    print(f"Total unique jobs:        {len(jobs)}")
+    print(f"Companies enriched:       {len(contacts)}")
+    print(f"Jobs with phone number:   {jobs_with_phone}")
+    print(f"Jobs with email:          {jobs_with_email}")
+    print(f"AI calls made:            {ai_calls}")
+    print(f"Errors:                   {run_stats.get('errors', 0)}")
+    print("=" * 60 + "\n")

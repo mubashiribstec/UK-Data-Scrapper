@@ -1,0 +1,43 @@
+# Environment
+.env
+
+# Output data
+output/
+!output/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Playwright
+playwright-report/
+
+# Lock files
+/tmp/nurse_scraper.lock
+
+# Proxy list (may contain sensitive data)
+proxies.txt
+
+# OS
+.DS_Store
+Thumbs.db
