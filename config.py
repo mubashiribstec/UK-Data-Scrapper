@@ -34,7 +34,7 @@ class Config:
 
     # Output
     output_dir: str = "./output"
-    export_formats: list = field(default_factory=lambda: ["json", "csv", "excel", "sqlite"])
+    export_formats: list = field(default_factory=lambda: ["json"])
     sqlite_path: str = "./output/scraper.db"
 
     # Rate limiting per domain

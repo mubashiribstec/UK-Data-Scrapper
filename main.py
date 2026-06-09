@@ -3,10 +3,8 @@
 
 import argparse
 import sys
-import os
 from pathlib import Path
 
-# Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.logger import setup_logger
@@ -15,26 +13,49 @@ from config import Config
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="UK Nurse Jobs Scraper — scrapes NHS Jobs, Reed, and Indeed UK",
+        prog="python main.py",
+        description="UK Nurse Jobs Scraper — scrapes NHS Jobs, Reed.co.uk, and Indeed UK",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  python main.py
-  python main.py --keywords "registered nurse" "RMN" --location London
-  python main.py --sources nhs reed --no-enrich --format csv
-  python main.py --ai --ai-provider ollama --max-results 100
-  python main.py --since 7 --format excel
+QUICK START
+-----------
+  python main.py                                     # full run, saves to output/jobs_DATE.json
+  python main.py --sources nhs --max-results 10      # fast test, NHS only
+  python main.py --no-enrich                         # skip contact lookup (much faster)
+  python main.py --since 7                           # jobs posted in last 7 days only
+
+COMMON RECIPES
+--------------
+  # London registered nurses, JSON only:
+  python main.py --keywords "registered nurse" "staff nurse" --location London
+
+  # All sources, save everything (JSON + CSV + Excel + SQLite):
+  python main.py --format json csv excel sqlite
+
+  # Quick smoke test (no saving):
   python main.py --sources nhs --max-results 5 --no-enrich --dry-run
+
+  # Enable AI contact lookup (needs Ollama running locally):
+  python main.py --ai --ai-provider ollama
+
+  # Resume last run — skip already-seen jobs:
+  python main.py --resume
+
+OUTPUT
+------
+  Default format: JSON  (output/jobs_YYYY-MM-DD_HH-MM.json)
+  Each run creates a new timestamped file — old files are NOT overwritten.
+  See README.md for the full JSON field reference.
         """,
     )
 
     parser.add_argument(
         "--keywords", nargs="+", metavar="KEYWORD",
-        help="Override config keywords",
+        help='Search keywords (default: nurse, registered nurse, staff nurse, community nurse, RGN, RMN, RNLD)',
     )
     parser.add_argument(
         "--location", metavar="LOCATION",
-        help="Override config location (single location)",
+        help="Location to search (default: United Kingdom)",
     )
     parser.add_argument(
         "--max-results", type=int, metavar="N", default=None,
@@ -43,49 +64,49 @@ Examples:
     parser.add_argument(
         "--sources", nargs="+", choices=["nhs", "reed", "indeed"],
         metavar="SOURCE",
-        help="Which sources to use (default: all). Choices: nhs reed indeed",
+        help="Sources to scrape: nhs reed indeed (default: all three)",
     )
     parser.add_argument(
         "--no-enrich", action="store_true",
-        help="Skip contact enrichment (faster)",
+        help="Skip contact enrichment — runs faster, no phone/email lookup",
     )
     parser.add_argument(
         "--ai", action="store_true",
-        help="Enable AI fallback enrichment",
+        help="Enable AI fallback for companies with no contact data found",
     )
     parser.add_argument(
         "--ai-provider", choices=["ollama", "anthropic"], default=None,
-        help="AI provider to use (default: ollama)",
+        help="AI provider: ollama (free, local) or anthropic (paid, accurate)",
     )
     parser.add_argument(
         "--format", nargs="+",
         choices=["json", "csv", "excel", "sqlite"],
         metavar="FORMAT",
-        help="Output format(s) (default: all). Choices: json csv excel sqlite",
+        help="Output format(s): json csv excel sqlite (default: json)",
     )
     parser.add_argument(
-        "--output-dir", metavar="PATH",
-        help="Output directory (default: ./output)",
-    )
-    parser.add_argument(
-        "--headful", action="store_true",
-        help="Run Playwright visibly (debug mode)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Scrape only, print results, don't save",
-    )
-    parser.add_argument(
-        "--resume", action="store_true",
-        help="Resume from last run — skip already-seen jobs",
+        "--output-dir", metavar="PATH", default=None,
+        help="Where to save output files (default: ./output)",
     )
     parser.add_argument(
         "--since", type=int, metavar="DAYS",
-        help="Only get jobs posted in the last N days (not yet fully implemented — note in logs)",
+        help="Only include jobs posted in the last N days",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Skip jobs already seen in a previous run (requires SQLite in output dir)",
+    )
+    parser.add_argument(
+        "--headful", action="store_true",
+        help="Show the browser window when scraping Indeed (useful for debugging)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Run scrapers but don't save — prints a preview instead",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
-        help="Verbose logging",
+        help="Show detailed per-request logging",
     )
 
     return parser
@@ -95,16 +116,12 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    # Setup logging first
-    log_dir = "./output/logs"
-    if args.output_dir:
-        log_dir = str(Path(args.output_dir) / "logs")
+    log_dir = str(Path(args.output_dir or "./output") / "logs")
     setup_logger(verbose=args.verbose, log_dir=log_dir)
 
     import logging
     logger = logging.getLogger(__name__)
 
-    # Build config with overrides
     config = Config()
 
     if args.keywords:
@@ -127,15 +144,14 @@ def main():
     if args.headful:
         config.playwright_headless = False
 
-    if args.since:
-        logger.info(f"--since {args.since}: date filtering will be applied at export stage")
-
-    # Create output directory
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 
-    logger.info("Starting UK Nurse Jobs Scraper")
-    logger.info(f"Config: keywords={config.keywords}, locations={config.locations}, "
-                f"max_results={config.max_results_per_keyword}, enrich={config.enrich_contacts}")
+    logger.info("UK Nurse Jobs Scraper starting")
+    logger.info(
+        f"keywords={config.keywords}  locations={config.locations}  "
+        f"max_results={config.max_results_per_keyword}  "
+        f"enrich={config.enrich_contacts}  formats={config.export_formats}"
+    )
 
     from pipeline import run_pipeline
 
@@ -148,23 +164,41 @@ def main():
             since_days=args.since,
         )
     except KeyboardInterrupt:
-        logger.warning("Interrupted by user. Partial results may have been saved.")
+        logger.warning("Interrupted — partial results may have been saved to output/")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Pipeline failed with unexpected error: {e}", exc_info=True)
+        logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
 
     jobs = result.get("jobs", [])
-    if args.dry_run and jobs:
-        print(f"\nDRY RUN: {len(jobs)} jobs found. First 5:\n")
-        for job in jobs[:5]:
-            print(f"  [{job.source}] {job.title} @ {job.company} — {job.location}")
-            if job.salary_text:
-                print(f"           Salary: {job.salary_text}")
-            print(f"           Apply: {job.apply_url}")
-            print()
+    out_files = result.get("output_files", [])
+
+    if args.dry_run:
+        _print_dry_run(jobs, result.get("contacts", {}))
+    elif out_files:
+        print(f"\nSaved to:")
+        for f in out_files:
+            print(f"  {f}")
+        print()
 
     sys.exit(0)
+
+
+def _print_dry_run(jobs, contacts):
+    import json as _json
+    from exporters.json_export import _build_job_object
+
+    print(f"\n{'='*60}")
+    print(f"DRY RUN — {len(jobs)} jobs found (not saved)")
+    print(f"{'='*60}\n")
+
+    for job in jobs[:5]:
+        obj = _build_job_object(job, contacts)
+        print(_json.dumps(obj, indent=2, default=str, ensure_ascii=False))
+        print()
+
+    if len(jobs) > 5:
+        print(f"  ... and {len(jobs) - 5} more jobs\n")
 
 
 if __name__ == "__main__":

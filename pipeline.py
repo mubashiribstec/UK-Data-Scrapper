@@ -204,41 +204,60 @@ def run_pipeline(
     if dry_run:
         logger.info("=== DRY RUN — results not saved ===")
         _print_summary(unique_jobs, contacts, run_stats)
-        return {"jobs": unique_jobs, "contacts": contacts, "run_id": run_id, **run_stats}
+        return {"jobs": unique_jobs, "contacts": contacts, "run_id": run_id, "output_files": [], **run_stats}
 
     logger.info("Stage 5: Exporting results...")
-    _export_all(unique_jobs, contacts, config, run_id, run_stats)
+    out_files = _export_all(unique_jobs, contacts, config, run_id, run_stats)
 
     _print_summary(unique_jobs, contacts, run_stats)
 
-    return {"jobs": unique_jobs, "contacts": contacts, "run_id": run_id, **run_stats}
+    return {
+        "jobs": unique_jobs,
+        "contacts": contacts,
+        "run_id": run_id,
+        "output_files": out_files,
+        **run_stats,
+    }
 
 
-def _export_all(jobs, contacts, config, run_id, run_stats):
+def _export_all(jobs, contacts, config, run_id, run_stats) -> list:
+    """Run all configured exporters and return list of written file paths."""
     formats = config.export_formats
     from pathlib import Path
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 
+    out_files = []
+
     if "json" in formats:
         from exporters.json_export import export_json
-        export_json(jobs, contacts, config.output_dir)
+        path = export_json(jobs, contacts, config.output_dir)
+        if path:
+            out_files.append(path)
 
     if "csv" in formats:
         from exporters.csv_export import export_csv
-        export_csv(jobs, contacts, config.output_dir)
+        path = export_csv(jobs, contacts, config.output_dir)
+        if path:
+            out_files.append(path)
 
     if "excel" in formats:
         from exporters.excel_export import export_excel
-        export_excel(jobs, contacts, config.output_dir, run_stats=run_stats)
+        path = export_excel(jobs, contacts, config.output_dir, run_stats=run_stats)
+        if path:
+            out_files.append(path)
 
     if "sqlite" in formats:
         from exporters.sqlite_export import export_sqlite
-        export_sqlite(jobs, contacts, config.sqlite_path, run_id, run_stats=run_stats)
+        path = export_sqlite(jobs, contacts, config.sqlite_path, run_id, run_stats=run_stats)
+        if path:
+            out_files.append(path)
+
+    return out_files
 
 
 def _save_partial(jobs, contacts, run_id, started_at, errors, duplicates_removed, config, dry_run):
     if dry_run or not jobs:
-        return {"jobs": jobs, "contacts": contacts, "run_id": run_id}
+        return {"jobs": jobs, "contacts": contacts, "run_id": run_id, "output_files": []}
     logger.info(f"Saving {len(jobs)} partial results before exit...")
     from enrichers.ai_enricher import get_call_count
     run_stats = {
@@ -249,8 +268,8 @@ def _save_partial(jobs, contacts, run_id, started_at, errors, duplicates_removed
         "errors": errors,
         "partial": True,
     }
-    _export_all(jobs, contacts, config, run_id, run_stats)
-    return {"jobs": jobs, "contacts": contacts, "run_id": run_id, **run_stats}
+    out_files = _export_all(jobs, contacts, config, run_id, run_stats)
+    return {"jobs": jobs, "contacts": contacts, "run_id": run_id, "output_files": out_files, **run_stats}
 
 
 def _print_summary(jobs, contacts, run_stats):
