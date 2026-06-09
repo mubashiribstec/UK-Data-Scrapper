@@ -29,16 +29,47 @@ class IndeedScraper(BaseScraper):
         self._browser = None
 
     def _init_playwright(self):
+        # ── Windows / asyncio-loop fix ────────────────────────────────────────
+        # When Indeed runs inside a ThreadPoolExecutor on Windows (Python 3.10+),
+        # the worker thread inherits a running asyncio event loop from the main
+        # thread.  Playwright's sync API detects that loop and refuses to start.
+        # Fix: replace the event loop in this thread with a fresh one.
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.set_event_loop(asyncio.new_event_loop())
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         try:
             from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise RuntimeError(
+                "playwright is not installed. Run:  pip install playwright"
+            )
+
+        try:
             self._playwright = sync_playwright().start()
+        except Exception as e:
+            if "Executable doesn't exist" in str(e) or "playwright install" in str(e).lower():
+                raise RuntimeError(
+                    "Playwright browsers not downloaded. Run:  playwright install chromium"
+                ) from e
+            raise
+
+        try:
             self._browser = self._playwright.chromium.launch(
                 headless=self.config.playwright_headless,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
             )
             logger.info("Indeed: Playwright browser launched")
         except Exception as e:
-            logger.error(f"Indeed: Failed to launch Playwright: {e}")
+            self._playwright.stop()
             raise
 
     def _close_playwright(self):

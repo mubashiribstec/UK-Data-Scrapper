@@ -288,8 +288,26 @@ UK-Data-Scrapper/
 
 ## Troubleshooting
 
+**Indeed: "Executable doesn't exist … chrome-headless-shell"**
+You need to download the Playwright browser binary. Run once:
+```bash
+playwright install chromium
+```
+
+**Indeed: "Playwright Sync API inside the asyncio loop" (Windows)**
+This is a known Windows issue — automatically fixed in the scraper code. If you still see it, make sure you have the latest code and Python 3.10+.
+
+**Reed returns 403**
+Reed uses bot detection. The scraper automatically warms up the session (visits the homepage first) and retries. If it persists, add a delay by setting `REQUEST_DELAY_MIN=5` in `.env`.
+
+**NHS: "Expecting value: line 1 column 1" / empty response**
+The scraper now logs the actual response content when this happens. Common causes:
+- Missing `Accept: application/json` header (fixed in current code)
+- The NHS API is temporarily down — check [api.jobs.nhs.uk](https://api.jobs.nhs.uk) status
+- Your IP is on a blocklist — try running from a residential internet connection
+
 **"No jobs collected"**
-The NHS API and Reed block requests from cloud/VPS IPs that are not on their allowlist. Run the scraper from your own machine or a residential proxy.
+Use `--verbose` to see per-request details. The scraper logs the HTTP status and response preview for every failed request, which will identify the cause.
 
 **Indeed CAPTCHA / blocked**
 Run with `--headful` to see the browser and solve the CAPTCHA manually once. After that the session cookie may work for several hours.

@@ -52,6 +52,11 @@ class NHSScraper(BaseScraper):
         super().__init__(config)
         self.rate_limiter = RateLimiter(config.domain_delays)
         self.session = requests.Session()
+        # NHS API requires JSON accept header — without it the API returns HTML
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
         results = []
@@ -76,7 +81,28 @@ class NHSScraper(BaseScraper):
                     timeout=self.config.request_timeout,
                 )
                 resp.raise_for_status()
+
+                if not resp.content:
+                    logger.warning(f"NHS: empty response for '{keyword}' page {page} (HTTP {resp.status_code})")
+                    break
+
+                content_type = resp.headers.get("Content-Type", "")
+                if "json" not in content_type:
+                    preview = resp.text[:200].replace("\n", " ")
+                    logger.warning(
+                        f"NHS: expected JSON but got '{content_type}' for '{keyword}'. "
+                        f"Preview: {preview!r}"
+                    )
+                    break
+
                 data = resp.json()
+            except requests.exceptions.JSONDecodeError:
+                preview = resp.text[:200].replace("\n", " ") if resp.text else "(empty)"
+                logger.error(
+                    f"NHS: JSON decode failed for '{keyword}' page {page}. "
+                    f"Status={resp.status_code} body={preview!r}"
+                )
+                break
             except Exception as e:
                 logger.error(f"NHS search page {page} failed for '{keyword}': {e}")
                 break
@@ -188,6 +214,9 @@ class NHSScraper(BaseScraper):
         self.rate_limiter.wait("api.jobs.nhs.uk")
         url = NHS_DETAIL_URL.format(id=job_id)
         resp = self.session.get(url, headers=get_headers(), timeout=self.config.request_timeout)
-        if resp.status_code == 200:
-            return resp.json()
+        if resp.status_code == 200 and resp.content:
+            try:
+                return resp.json()
+            except Exception:
+                return None
         return None

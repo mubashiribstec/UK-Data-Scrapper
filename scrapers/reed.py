@@ -50,13 +50,51 @@ def _parse_salary_ld(salary_obj: dict) -> tuple[Optional[float], Optional[float]
     return sal_min, sal_max, period
 
 
+def _reed_headers(referer: str = "https://www.reed.co.uk/") -> dict:
+    """Headers that pass Reed's bot detection — must look like a real browser navigation."""
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                  "image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": referer,
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    }
+
+
 class ReedScraper(BaseScraper):
     def __init__(self, config):
         super().__init__(config)
         self.rate_limiter = RateLimiter(config.domain_delays)
         self.session = requests.Session()
+        self._warmed_up = False
+
+    def _warmup(self):
+        """Visit Reed homepage first to get cookies — prevents 403 on search pages."""
+        try:
+            self.session.get(
+                "https://www.reed.co.uk/",
+                headers=_reed_headers(referer="https://www.google.com/"),
+                timeout=self.config.request_timeout,
+            )
+            self._warmed_up = True
+            logger.debug("Reed: session warmed up (homepage visited)")
+        except Exception as e:
+            logger.debug(f"Reed: warmup failed (continuing anyway): {e}")
+            self._warmed_up = True   # don't retry
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
+        if not self._warmed_up:
+            self._warmup()
+
         results = []
         page = 1
         collected = 0
@@ -67,20 +105,49 @@ class ReedScraper(BaseScraper):
             params = {"location": location, "pageno": page}
             url = REED_SEARCH_URL.format(keyword=keyword_slug)
 
-            try:
-                resp = self.session.get(
-                    url,
-                    params=params,
-                    headers=get_headers(),
-                    timeout=self.config.request_timeout,
-                )
-            except Exception as e:
-                logger.error(f"Reed request failed for '{keyword}' page {page}: {e}")
+            for attempt in range(self.config.max_retries):
+                try:
+                    resp = self.session.get(
+                        url,
+                        params=params,
+                        headers=_reed_headers(),
+                        timeout=self.config.request_timeout,
+                    )
+                    break
+                except Exception as e:
+                    logger.error(f"Reed request failed for '{keyword}' page {page}: {e}")
+                    resp = None
+            else:
+                break  # all retries exhausted
+
+            if resp is None:
                 break
 
+            if resp.status_code == 403:
+                if page == 1:
+                    # First page 403: re-warm and retry once
+                    logger.warning("Reed: 403 on first page — refreshing session and retrying")
+                    self._warmed_up = False
+                    self._warmup()
+                    time.sleep(3)
+                    try:
+                        resp = self.session.get(
+                            url, params=params,
+                            headers=_reed_headers(),
+                            timeout=self.config.request_timeout,
+                        )
+                    except Exception:
+                        break
+                    if resp.status_code != 200:
+                        logger.warning(f"Reed: still {resp.status_code} after session refresh — skipping")
+                        break
+                else:
+                    logger.warning(f"Reed: 403 on page {page}, stopping pagination")
+                    break
+
             if resp.status_code == 429 or resp.status_code == 503:
-                retry_after = int(resp.headers.get("Retry-After", 10))
-                logger.warning(f"Reed rate limited (HTTP {resp.status_code}), waiting {retry_after}s")
+                retry_after = int(resp.headers.get("Retry-After", 15))
+                logger.warning(f"Reed rate limited ({resp.status_code}), waiting {retry_after}s")
                 time.sleep(retry_after)
                 continue
 
