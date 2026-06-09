@@ -52,7 +52,7 @@ def _build_job_object(job, contacts: dict) -> dict:
     }
 
 
-def export_json(jobs: list, contacts: dict, output_dir: str) -> str:
+def export_json(jobs: list, contacts: dict, output_dir: str, quality_report: dict = None) -> str:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
@@ -73,6 +73,7 @@ def export_json(jobs: list, contacts: dict, output_dir: str) -> str:
             1 for j in job_objects
             if j["contact"] and j["contact"]["emails"]
         ),
+        "quality_report": quality_report,
         "jobs": job_objects,
     }
 

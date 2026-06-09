@@ -63,8 +63,8 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
                 all_emails.append(e)
     merged.emails = sort_emails_by_priority(all_emails)
 
-    # Contact person: first non-null priority order (website > CH > AI)
-    source_priority = ["website", "companies_house", "charities", "cqc", "duckduckgo", "ai"]
+    # Contact person: first non-null priority order (job ad itself > website > CH > AI)
+    source_priority = ["job_description", "website", "companies_house", "charities", "cqc", "duckduckgo", "ai"]
     records_by_source = {r.enrichment_sources[0] if r.enrichment_sources else "unknown": r for r in records}
     for src in source_priority:
         if src in records_by_source and records_by_source[src].contact_person:
@@ -72,7 +72,7 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
             break
 
     # Address: prefer Companies House > CQC > website
-    for src in ["companies_house", "cqc", "charities", "website", "duckduckgo", "ai"]:
+    for src in ["companies_house", "cqc", "charities", "website", "job_description", "duckduckgo", "ai"]:
         if src in records_by_source and records_by_source[src].address:
             merged.address = records_by_source[src].address
             break
@@ -132,4 +132,7 @@ def _compute_confidence(record: ContactRecord) -> int:
         score += 10
     if record.ai_used and len(record.enrichment_sources) == 1:
         score -= 20
+    # Contact details printed in the job advert itself are the strongest signal
+    if "job_description" in record.enrichment_sources:
+        score += 10
     return max(0, min(100, score))

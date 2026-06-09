@@ -13,7 +13,8 @@ def _has_enough_data(record: ContactRecord) -> bool:
     return bool(record.phone_numbers) and bool(record.emails)
 
 
-def _enrich_company(company: str, company_url: Optional[str], location: Optional[str], config) -> ContactRecord:
+def _enrich_company(company: str, company_url: Optional[str], location: Optional[str], config,
+                    seed: Optional[ContactRecord] = None) -> ContactRecord:
     """Run all enrichers in priority order for a single company."""
     from enrichers.website import enrich_from_website
     from enrichers.companies_house import enrich_from_companies_house
@@ -24,6 +25,14 @@ def _enrich_company(company: str, company_url: Optional[str], location: Optional
 
     collected_records = []
     merged = ContactRecord(company=company)
+
+    # 0. Contacts mined from the job description itself — highest confidence,
+    #    already collected for free. May make all external lookups unnecessary.
+    if seed and (seed.phone_numbers or seed.emails):
+        collected_records.append(seed)
+        merged = merge_contacts(collected_records, company)
+        if _has_enough_data(merged):
+            return merged
 
     timeout = getattr(config, "enrichment_timeout", 10)
 
@@ -118,10 +127,13 @@ class EnrichmentOrchestrator:
     def __init__(self, config):
         self.config = config
 
-    def enrich_batch(self, jobs: list[JobRecord]) -> dict[str, ContactRecord]:
+    def enrich_batch(self, jobs: list[JobRecord],
+                     seed_contacts: dict[str, ContactRecord] = None) -> dict[str, ContactRecord]:
         """
         Deduplicate companies first, enrich each once, return dict of company → ContactRecord.
+        seed_contacts: contacts already mined from job descriptions, keyed by company.
         """
+        seed_contacts = seed_contacts or {}
         # Gather unique companies with their representative URL and location
         companies: dict[str, tuple[Optional[str], Optional[str]]] = {}
         for job in jobs:
@@ -144,7 +156,8 @@ class EnrichmentOrchestrator:
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_company = {
-                executor.submit(_enrich_company, name, url, loc, self.config): name
+                executor.submit(_enrich_company, name, url, loc, self.config,
+                                seed_contacts.get(name)): name
                 for name, (url, loc) in companies.items()
             }
 

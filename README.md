@@ -1,6 +1,6 @@
 # UK Nurse Jobs Scraper
 
-Scrapes nurse job listings from **NHS Jobs**, **Reed.co.uk**, and **Indeed UK**, then enriches every job with company contact details (phone, email, address). Results saved as clean JSON.
+Scrapes nurse job listings from **NHS Jobs**, **Reed.co.uk**, **Indeed UK**, **TotalJobs**, and **CV-Library**, then enriches every job with company contact details (phone, email, address). Results saved as clean JSON with a built-in data-quality report.
 
 ---
 
@@ -9,16 +9,28 @@ Scrapes nurse job listings from **NHS Jobs**, **Reed.co.uk**, and **Indeed UK**,
 ```bash
 # 1. Install dependencies
 pip install -r requirements.txt
-playwright install chromium   # needed for Indeed only
+playwright install chromium   # needed for Indeed / TotalJobs / CV-Library
 
-# 2. Copy env template (all keys optional)
+# 2. Copy env template and add your keys (all optional)
 cp .env.example .env
 
-# 3. Run
+# 3. (Recommended, once) log in to Indeed — session is saved and reused
+python main.py --login-indeed
+
+# 4. Run
 python main.py
 ```
 
 Output lands in `./output/jobs_YYYY-MM-DD_HH-MM.json`.
+
+---
+
+## Recommended one-time setup
+
+Two free keys make the scraper dramatically more reliable:
+
+1. **Reed API key** (free) — register at [reed.co.uk/developers](https://www.reed.co.uk/developers), put the key in `.env` as `REED_API_KEY=...`. The scraper then uses Reed's official JSON API (no bot detection, full data). Without it, HTML scraping is used as fallback.
+2. **Gemini API key** (free tier) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...`. Powers AI description parsing and contact lookup, with automatic failover to your Ollama server.
 
 ---
 
@@ -27,6 +39,7 @@ Output lands in `./output/jobs_YYYY-MM-DD_HH-MM.json`.
 | What you want | Command |
 |---|---|
 | Full run, all sources | `python main.py` |
+| One-time Indeed login (do this first) | `python main.py --login-indeed` |
 | Fast test (NHS only, 10 jobs, no contact lookup) | `python main.py --sources nhs --max-results 10 --no-enrich` |
 | London nurses only | `python main.py --location London` |
 | Specific job titles | `python main.py --keywords "registered nurse" "RMN" "RNLD"` |
@@ -35,34 +48,53 @@ Output lands in `./output/jobs_YYYY-MM-DD_HH-MM.json`.
 | Save as JSON + Excel + CSV | `python main.py --format json excel csv` |
 | Skip contact lookup (much faster) | `python main.py --no-enrich` |
 | Resume — skip already-seen jobs | `python main.py --resume` |
-| Use AI to fill missing contacts (Ollama) | `python main.py --ai` |
+| Full AI pipeline (Gemini → Ollama) | `python main.py --ai` |
+| Use a proxy list | `python main.py --proxies proxies.txt` |
 
 ---
 
-## Installation
+## Job Sources
 
-### Requirements
-- Python 3.10+
-- pip
+| Source | Method | Notes |
+|---|---|---|
+| `nhs` | Official REST API | No key needed |
+| `reed` | **Official API** when `REED_API_KEY` is set, HTML fallback otherwise | Free key strongly recommended |
+| `indeed` | Browser (Playwright), structured **mosaic JSON** extraction with CSS fallback | Run `--login-indeed` once for a logged-in session |
+| `totaljobs` | Browser (Playwright), JSON-LD extraction with CSS fallback | StepStone bot detection — may be partially blocked |
+| `cvlibrary` | Browser (Playwright), JSON-LD extraction with CSS fallback | Cloudflare-protected — may be partially blocked |
 
-### Steps
+Select sources with `--sources nhs reed indeed totaljobs cvlibrary` (default: all five).
+
+### Indeed login (recommended)
 
 ```bash
-# Clone and enter the repo
-git clone <repo-url>
-cd UK-Data-Scrapper
-
-# Install Python packages
-pip install -r requirements.txt
-
-# Install Playwright's Chromium browser (for Indeed)
-playwright install chromium
-
-# Optional: copy and edit the env file
-cp .env.example .env
+python main.py --login-indeed
 ```
 
-If you **don't need Indeed** (just NHS + Reed), you can skip `playwright install`.
+A browser window opens on the Indeed sign-in page. Enter your email, then the one-time code (OTP) Indeed emails you. When you're logged in, press Enter in the terminal. The session is saved to `output/.browser/indeed/` and **every later run reuses it automatically (headless)** — logged-in sessions get blocked far less often. Repeat only if Indeed logs you out.
+
+---
+
+## AI Pipeline (`--ai`)
+
+Providers are tried in a chain with automatic failover: **Gemini → Ollama → Anthropic**. Configure in `.env`:
+
+```env
+GEMINI_API_KEY=your_key            # primary (free tier)
+GEMINI_MODEL=gemini-2.0-flash
+OLLAMA_BASE_URL=http://103.207.85.46:11434   # failover
+AI_MODEL=llama3.2
+ANTHROPIC_API_KEY=                 # optional, last in chain
+```
+
+A provider that fails twice in a row (quota, network) is skipped for the rest of the run. Force a single provider with `--ai-provider gemini|ollama|anthropic`.
+
+With `--ai` enabled the AI does three jobs:
+1. **Description parsing** — extracts `requirements` and `benefits` lists from job ads that don't provide them (budget: `AI_PARSE_LIMIT`, default 30/run)
+2. **Contact mining** — finds phone/email printed inside the job ad text (regex runs first and is free; AI only fills the gaps, and only values literally present in the text are accepted)
+3. **Contact lookup fallback** — last-resort company contact research (budget: `AI_CALL_LIMIT`, default 20/run)
+
+Contact mining via regex (step 2) runs on **every** run, even without `--ai` — contacts printed in the ad itself are the highest-confidence source and cost nothing.
 
 ---
 
@@ -75,7 +107,7 @@ Search:
   --keywords KEYWORD [...]    Job titles to search (default: 7 nursing titles)
   --location LOCATION         Where to search (default: United Kingdom)
   --max-results N             Max jobs per keyword (default: 50)
-  --sources SOURCE [...]      nhs  reed  indeed  (default: all three)
+  --sources SOURCE [...]      nhs reed indeed totaljobs cvlibrary (default: all)
   --since DAYS                Only jobs posted in the last N days
 
 Output:
@@ -83,14 +115,18 @@ Output:
   --output-dir PATH           Where to save files (default: ./output)
   --dry-run                   Print a JSON preview, don't save anything
 
-Enrichment:
+Enrichment & AI:
   --no-enrich                 Skip contact lookup (phone/email) — faster
-  --ai                        Enable AI fallback for missing contacts
-  --ai-provider PROVIDER      ollama (free, local)  or  anthropic (paid)
+  --ai                        Enable the AI pipeline (description parsing + contact fallback)
+  --ai-provider PROVIDER      Force: gemini | ollama | anthropic (default: auto chain)
+
+Sessions & network:
+  --login-indeed              One-time interactive Indeed login (saved + reused)
+  --proxies PATH              Proxy list file for requests-based scrapers (NHS, Reed)
 
 Other:
   --resume                    Skip jobs already saved in a previous run
-  --headful                   Show the browser when scraping Indeed (debug)
+  --headful                   Show the browser (debug Indeed/TotalJobs/CV-Library)
   -v, --verbose               Detailed per-request logging
 ```
 
@@ -109,6 +145,14 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
   "total_with_contact": 98,
   "total_with_phone": 71,
   "total_with_email": 85,
+  "quality_report": {
+    "per_source_raw": {"nhs_jobs": 120, "reed": 95, "indeed": 60},
+    "per_source_unique": {"nhs_jobs": 80, "reed": 40, "indeed": 22},
+    "field_coverage": {"description": 0.72, "salary": 0.61, "phone": 0.31, "email": 0.22},
+    "dedup": {"raw_total": 275, "unique": 142, "removed": 133},
+    "ai_calls": 12,
+    "errors": 0
+  },
   "jobs": [ ... ]
 }
 ```
@@ -146,7 +190,7 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
     "company_type": "charity",
     "confidence_score": 90,
     "ai_used": false,
-    "enrichment_sources": ["website", "companies_house", "cqc"]
+    "enrichment_sources": ["job_description", "website", "companies_house"]
   },
   "_hash": "a3f9b2c1d4e5",
   "scraped_at": "2026-06-09T18:00:00Z"
@@ -164,7 +208,7 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
 | `salary_period` | `"annual"` or `"hourly"` |
 | `contact.confidence_score` | 0–100: how reliable the contact data is |
 | `contact.ai_used` | `true` if AI was used to find this contact |
-| `contact.enrichment_sources` | Which enrichers found data: `website`, `companies_house`, `cqc`, `charities`, `duckduckgo`, `ai` |
+| `contact.enrichment_sources` | Which enrichers found data: `job_description`, `website`, `companies_house`, `cqc`, `charities`, `duckduckgo`, `ai` |
 | `_hash` | Deduplication fingerprint (title + company + location) |
 
 ---
@@ -173,30 +217,26 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
 
 For each unique company, the scraper tries these sources in order, stopping when it has a phone **and** email:
 
+0. **The job ad itself** — phone/email printed in the description (free, highest confidence)
 1. **Company website** — scrapes `/contact`, `/about`, `/team` pages
 2. **Companies House** — UK registered address + directors (free, no key needed)
 3. **Charity Commission** — phone/email for hospices and care charities
 4. **CQC open data** — Care Quality Commission registry (care homes, nursing homes)
 5. **DuckDuckGo** — searches `"Company Name" contact phone email UK`
-6. **AI fallback** — Ollama or Anthropic (only if `--ai` flag is set)
+6. **AI fallback** — Gemini/Ollama/Anthropic chain (only if `--ai` flag is set)
 
 ---
 
-## Saving Other Formats
+## Proxies (optional)
 
-```bash
-# JSON only (default)
-python main.py
+Create a text file with one proxy per line:
 
-# JSON + Excel (3-sheet workbook: Jobs, Contacts, Summary)
-python main.py --format json excel
-
-# All four formats
-python main.py --format json csv excel sqlite
-
-# SQLite only (persistent, tracks run history)
-python main.py --format sqlite
 ```
+http://user:pass@host:port
+http://other-host:port
+```
+
+Run with `python main.py --proxies proxies.txt` (or set `PROXIES_FILE=` in `.env`). Proxies apply to the requests-based scrapers (NHS, Reed) and rotate automatically after a 403. The browser-based scrapers don't use proxies — rotating IPs would conflict with the saved Indeed login session.
 
 ---
 
@@ -205,16 +245,23 @@ python main.py --format sqlite
 Copy `.env.example` to `.env` and edit as needed. All are optional.
 
 ```env
-# Override search defaults
+# Sources
+REED_API_KEY=                        # free, reed.co.uk/developers
+
+# AI chain (gemini → ollama → anthropic)
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.0-flash
+OLLAMA_BASE_URL=http://103.207.85.46:11434
+AI_MODEL=llama3.2
+ANTHROPIC_API_KEY=
+AI_FALLBACK_ENABLED=false            # --ai flag does the same
+AI_CALL_LIMIT=20                     # contact-lookup budget per run
+AI_PARSE_LIMIT=30                    # description-parsing budget per run
+
+# Scraping
 MAX_RESULTS_PER_KEYWORD=50
 REQUEST_DELAY_MIN=2.0
-
-# AI contact lookup (only needed with --ai)
-AI_FALLBACK_ENABLED=false
-AI_PROVIDER=ollama                   # or: anthropic
-AI_MODEL=llama3.2                    # Ollama model name
-ANTHROPIC_API_KEY=                   # only for ai_provider=anthropic
-OLLAMA_BASE_URL=http://localhost:11434
+PROXIES_FILE=
 
 # Output
 OUTPUT_DIR=./output
@@ -257,9 +304,13 @@ UK-Data-Scrapper/
 ├── .env.example       ← copy to .env
 │
 ├── scrapers/
-│   ├── nhs.py         ← NHS Jobs REST API
-│   ├── reed.py        ← Reed.co.uk (JSON-LD)
-│   └── indeed.py      ← Indeed UK (Playwright)
+│   ├── nhs.py             ← NHS Jobs REST API
+│   ├── reed.py            ← Reed official API + HTML fallback
+│   ├── indeed.py          ← Indeed UK (Playwright, mosaic JSON, saved login)
+│   ├── totaljobs.py       ← TotalJobs (Playwright, JSON-LD)
+│   ├── cvlibrary.py       ← CV-Library (Playwright, JSON-LD)
+│   ├── playwright_base.py ← shared browser boilerplate + anti-detection
+│   └── jsonld.py          ← shared schema.org JobPosting parser
 │
 ├── enrichers/
 │   ├── orchestrator.py   ← runs enrichers in order
@@ -268,11 +319,13 @@ UK-Data-Scrapper/
 │   ├── charities.py
 │   ├── cqc.py
 │   ├── duckduckgo.py
-│   └── ai_enricher.py    ← optional AI fallback
+│   └── ai_enricher.py    ← AI contact fallback
 │
 ├── processing/
 │   ├── dedup.py       ← 3-level deduplication
 │   ├── cleaner.py     ← phone/email/salary normalisation
+│   ├── ai_parser.py   ← mines descriptions (regex + AI)
+│   ├── quality.py     ← run quality report
 │   └── merger.py      ← merges enricher results
 │
 ├── exporters/
@@ -280,6 +333,12 @@ UK-Data-Scrapper/
 │   ├── csv_export.py
 │   ├── excel_export.py   ← 3-sheet workbook
 │   └── sqlite_export.py  ← persistent store
+│
+├── utils/
+│   ├── ai_client.py   ← Gemini → Ollama → Anthropic failover chain
+│   ├── retry.py       ← exponential backoff
+│   ├── proxy.py       ← optional proxy rotation
+│   └── ...
 │
 └── output/            ← all output files land here (gitignored)
 ```
@@ -297,23 +356,27 @@ playwright install chromium
 **Indeed: "Playwright Sync API inside the asyncio loop" (Windows)**
 This is a known Windows issue — automatically fixed in the scraper code. If you still see it, make sure you have the latest code and Python 3.10+.
 
-**Reed returns 403**
-Reed uses bot detection. The scraper automatically warms up the session (visits the homepage first) and retries. If it persists, add a delay by setting `REQUEST_DELAY_MIN=5` in `.env`.
+**Indeed blocked / CAPTCHA**
+Run `python main.py --login-indeed` once — logged-in sessions are blocked far less. If a CAPTCHA still appears, run with `--headful`, solve it manually, and the session cookie keeps working afterwards.
 
-**NHS: "Expecting value: line 1 column 1" / empty response**
-The scraper now logs the actual response content when this happens. Common causes:
-- Missing `Accept: application/json` header (fixed in current code)
-- The NHS API is temporarily down — check [api.jobs.nhs.uk](https://api.jobs.nhs.uk) status
-- Your IP is on a blocklist — try running from a residential internet connection
+**Reed returns 403 / 0 jobs**
+Get a free API key from [reed.co.uk/developers](https://www.reed.co.uk/developers) and set `REED_API_KEY` in `.env` — the official API has no bot detection. Without a key the HTML fallback warms up the session and retries, but can still be blocked.
+
+**TotalJobs / CV-Library return 0 jobs**
+Both sites use aggressive bot protection (StepStone / Cloudflare). Try `--headful` to see what the browser hits. If they stay blocked from your network, exclude them: `--sources nhs reed indeed`.
+
+**NHS: "Expecting value: line 1 column 1" / 403 / empty response**
+- The NHS API blocks many datacenter/VPS IPs — run from a residential connection
+- Check [api.jobs.nhs.uk](https://api.jobs.nhs.uk) status
+- Use `--verbose` to see the response preview the scraper logs
+
+**AI: "all providers in the chain failed"**
+- Gemini: check `GEMINI_API_KEY` is valid and has quota left
+- Ollama: confirm the server is reachable (`curl http://103.207.85.46:11434/api/tags`) and the model is pulled (`ollama pull llama3.2`)
+- A provider that fails twice is skipped for the rest of the run — restart to retry it
 
 **"No jobs collected"**
 Use `--verbose` to see per-request details. The scraper logs the HTTP status and response preview for every failed request, which will identify the cause.
 
-**Indeed CAPTCHA / blocked**
-Run with `--headful` to see the browser and solve the CAPTCHA manually once. After that the session cookie may work for several hours.
-
 **Phone numbers look wrong**
 The cleaner rejects numbers that look like SVG coordinates or years. If valid numbers are being filtered, check the raw `description` field in the JSON and report the pattern.
-
-**AI enrichment returning nulls**
-Make sure Ollama is running: `ollama serve` and `ollama pull llama3.2`. Use `--verbose` to see the raw AI response.

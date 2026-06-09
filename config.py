@@ -28,9 +28,21 @@ class Config:
     enrich_contacts: bool = True
     enrichment_timeout: int = 10
     ai_fallback_enabled: bool = False
-    ai_provider: str = "ollama"
-    ai_model: str = "llama3.2"
+    ai_provider: str = ""               # "" = automatic chain (gemini → ollama → anthropic)
+    ai_model: str = "llama3.2"          # Ollama model name
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    ollama_base_url: str = "http://localhost:11434"
     anthropic_model: str = "claude-haiku-4-5-20251001"
+    ai_call_limit: int = 20             # max AI contact-enrichment calls per run
+    ai_parse_limit: int = 30            # max AI description-parsing calls per run
+
+    # Source credentials / keys
+    reed_api_key: str = ""              # free key from reed.co.uk/developers
+    indeed_profile_dir: str = "./output/.browser/indeed"
+
+    # Proxies (optional, requests-based scrapers only)
+    proxies_file: str = ""
 
     # Output
     output_dir: str = "./output"
@@ -42,6 +54,8 @@ class Config:
         "uk.indeed.com": 4.0,
         "www.reed.co.uk": 2.5,
         "api.jobs.nhs.uk": 1.0,
+        "www.totaljobs.com": 3.0,
+        "www.cv-library.co.uk": 3.0,
         "api.company-information.service.gov.uk": 0.5
     })
 
@@ -59,6 +73,20 @@ class Config:
             self.ai_provider = os.getenv("AI_PROVIDER")
         if os.getenv("AI_MODEL"):
             self.ai_model = os.getenv("AI_MODEL")
+        if os.getenv("GEMINI_API_KEY"):
+            self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if os.getenv("GEMINI_MODEL"):
+            self.gemini_model = os.getenv("GEMINI_MODEL")
+        if os.getenv("OLLAMA_BASE_URL"):
+            self.ollama_base_url = os.getenv("OLLAMA_BASE_URL")
+        if os.getenv("AI_CALL_LIMIT"):
+            self.ai_call_limit = int(os.getenv("AI_CALL_LIMIT"))
+        if os.getenv("AI_PARSE_LIMIT"):
+            self.ai_parse_limit = int(os.getenv("AI_PARSE_LIMIT"))
+        if os.getenv("REED_API_KEY"):
+            self.reed_api_key = os.getenv("REED_API_KEY")
+        if os.getenv("PROXIES_FILE"):
+            self.proxies_file = os.getenv("PROXIES_FILE")
         if os.getenv("OUTPUT_DIR"):
             self.output_dir = os.getenv("OUTPUT_DIR")
         if os.getenv("SQLITE_PATH"):

@@ -35,11 +35,23 @@ COMMON RECIPES
   # Quick smoke test (no saving):
   python main.py --sources nhs --max-results 5 --no-enrich --dry-run
 
-  # Enable AI contact lookup (needs Ollama running locally):
-  python main.py --ai --ai-provider ollama
+  # One-time Indeed login (saved and reused by all later runs):
+  python main.py --login-indeed
+
+  # Enable the AI pipeline (Gemini → Ollama failover, set keys in .env):
+  python main.py --ai
 
   # Resume last run — skip already-seen jobs:
   python main.py --resume
+
+SOURCES
+-------
+  nhs        NHS Jobs official API
+  reed       Reed official API if REED_API_KEY is set (free key from
+             reed.co.uk/developers), HTML scraping otherwise
+  indeed     Indeed UK via browser; run --login-indeed once for best results
+  totaljobs  TotalJobs via browser
+  cvlibrary  CV-Library via browser
 
 OUTPUT
 ------
@@ -62,9 +74,10 @@ OUTPUT
         help="Max results per keyword (default: 50)",
     )
     parser.add_argument(
-        "--sources", nargs="+", choices=["nhs", "reed", "indeed"],
+        "--sources", nargs="+",
+        choices=["nhs", "reed", "indeed", "totaljobs", "cvlibrary"],
         metavar="SOURCE",
-        help="Sources to scrape: nhs reed indeed (default: all three)",
+        help="Sources to scrape: nhs reed indeed totaljobs cvlibrary (default: all)",
     )
     parser.add_argument(
         "--no-enrich", action="store_true",
@@ -75,8 +88,17 @@ OUTPUT
         help="Enable AI fallback for companies with no contact data found",
     )
     parser.add_argument(
-        "--ai-provider", choices=["ollama", "anthropic"], default=None,
-        help="AI provider: ollama (free, local) or anthropic (paid, accurate)",
+        "--ai-provider", choices=["gemini", "ollama", "anthropic"], default=None,
+        help="Force one AI provider (default: automatic chain gemini → ollama → anthropic)",
+    )
+    parser.add_argument(
+        "--login-indeed", action="store_true",
+        help="One-time interactive Indeed login — opens a browser, you complete "
+             "email+OTP, the session is saved and reused by all future runs",
+    )
+    parser.add_argument(
+        "--proxies", metavar="PATH", default=None,
+        help="Path to a proxies file (one per line) for requests-based scrapers",
     )
     parser.add_argument(
         "--format", nargs="+",
@@ -143,8 +165,15 @@ def main():
         config.sqlite_path = str(Path(args.output_dir) / "scraper.db")
     if args.headful:
         config.playwright_headless = False
+    if args.proxies:
+        config.proxies_file = args.proxies
 
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+    if args.login_indeed:
+        from scrapers.indeed import run_indeed_login
+        ok = run_indeed_login(config)
+        sys.exit(0 if ok else 1)
 
     logger.info("UK Nurse Jobs Scraper starting")
     logger.info(

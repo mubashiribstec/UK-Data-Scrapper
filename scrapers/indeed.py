@@ -1,99 +1,83 @@
 import re
+import json
 import random
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from scrapers.base import BaseScraper, JobRecord
-from utils.user_agents import get_random_user_agent
+from scrapers.base import JobRecord
+from scrapers.playwright_base import PlaywrightScraper
 
 logger = logging.getLogger(__name__)
 
 INDEED_BASE = "https://uk.indeed.com/jobs"
 INDEED_JOB_URL = "https://uk.indeed.com/viewjob?jk={job_id}"
+INDEED_LOGIN_URL = "https://secure.indeed.com/auth?hl=en_GB"
+
+MOSAIC_RE = re.compile(
+    r'window\.mosaic\.providerData\["mosaic-provider-jobcards"\]\s*=\s*(\{.+?\});',
+    re.DOTALL,
+)
 
 
-def _is_blocked(page) -> bool:
+def _profile_ready(profile_dir: str) -> bool:
+    """A persistent Indeed profile exists from a previous --login-indeed run."""
+    p = Path(profile_dir)
+    return p.is_dir() and any(p.iterdir())
+
+
+def run_indeed_login(config) -> bool:
+    """One-time interactive Indeed login.
+
+    Opens a HEADFUL browser on a persistent profile; the user completes the
+    login (email + OTP) manually. Cookies persist to disk and every later
+    headless run reuses them automatically.
+    """
+    scraper = IndeedScraper(config)
+    profile_dir = getattr(config, "indeed_profile_dir", "./output/.browser/indeed")
+
+    # Force headful for the login regardless of config
+    original_headless = config.playwright_headless
+    config.playwright_headless = False
     try:
-        title = page.title().lower()
-        return any(x in title for x in ["captcha", "robot", "blocked", "verify", "security"])
-    except Exception:
+        scraper._init_playwright(user_data_dir=profile_dir)
+        page = scraper._context.new_page()
+        page.goto(INDEED_LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
+
+        print("\n" + "=" * 64)
+        print("INDEED LOGIN")
+        print("=" * 64)
+        print("A browser window has opened on the Indeed sign-in page.")
+        print("1. Enter your email and continue")
+        print("2. When Indeed emails you a one-time code (OTP), enter it")
+        print("3. Wait until you are fully logged in (you see your account)")
+        print("=" * 64)
+        input("When you are logged in, press Enter here to save the session... ")
+
+        page.close()
+        logger.info(f"Indeed: login session saved to {profile_dir}")
+        print(f"\nSession saved. Future runs will use it automatically (headless).\n")
+        return True
+    except Exception as e:
+        logger.error(f"Indeed login failed: {e}")
         return False
+    finally:
+        config.playwright_headless = original_headless
+        scraper._close_playwright()
 
 
-class IndeedScraper(BaseScraper):
-    def __init__(self, config):
-        super().__init__(config)
-        self._playwright = None
-        self._browser = None
-
-    def _init_playwright(self):
-        # ── Windows / asyncio-loop fix ────────────────────────────────────────
-        # When Indeed runs inside a ThreadPoolExecutor on Windows (Python 3.10+),
-        # the worker thread inherits a running asyncio event loop from the main
-        # thread.  Playwright's sync API detects that loop and refuses to start.
-        # Fix: replace the event loop in this thread with a fresh one.
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.set_event_loop(asyncio.new_event_loop())
-        except RuntimeError:
-            asyncio.set_event_loop(asyncio.new_event_loop())
-
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise RuntimeError(
-                "playwright is not installed. Run:  pip install playwright"
-            )
-
-        try:
-            self._playwright = sync_playwright().start()
-        except Exception as e:
-            if "Executable doesn't exist" in str(e) or "playwright install" in str(e).lower():
-                raise RuntimeError(
-                    "Playwright browsers not downloaded. Run:  playwright install chromium"
-                ) from e
-            raise
-
-        try:
-            self._browser = self._playwright.chromium.launch(
-                headless=self.config.playwright_headless,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            logger.info("Indeed: Playwright browser launched")
-        except Exception as e:
-            self._playwright.stop()
-            raise
-
-    def _close_playwright(self):
-        try:
-            if self._browser:
-                self._browser.close()
-            if self._playwright:
-                self._playwright.stop()
-        except Exception:
-            pass
-
-    def _new_context(self):
-        width = random.randint(1280, 1440)
-        height = random.randint(700, 800)
-        return self._browser.new_context(
-            user_agent=get_random_user_agent(),
-            viewport={"width": width, "height": height},
-            locale="en-GB",
-            extra_http_headers={"Accept-Language": "en-GB,en;q=0.9"},
-        )
+class IndeedScraper(PlaywrightScraper):
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
+        profile_dir = getattr(self.config, "indeed_profile_dir", "")
+        use_profile = profile_dir and _profile_ready(profile_dir)
+
         try:
-            self._init_playwright()
+            self._init_playwright(user_data_dir=profile_dir if use_profile else None)
+            if use_profile:
+                logger.info("Indeed: using saved login session")
         except Exception as e:
             logger.warning(f"Indeed: Playwright unavailable, skipping. Error: {e}")
             return []
@@ -111,13 +95,17 @@ class IndeedScraper(BaseScraper):
 
             while len(results) < self.config.max_results_per_keyword:
                 if jobs_in_context >= 25:
-                    # Reset browser context to appear as new visitor
+                    # Appear as a new visitor. With a persistent (logged-in)
+                    # profile we only recycle the page — recycling the context
+                    # would drop the session.
                     try:
                         page.close()
-                        ctx.close()
+                        if not self._persistent:
+                            ctx.close()
                     except Exception:
                         pass
-                    ctx = self._new_context()
+                    if not self._persistent:
+                        ctx = self._new_context()
                     page = ctx.new_page()
                     self._setup_page(page)
                     jobs_in_context = 0
@@ -131,12 +119,15 @@ class IndeedScraper(BaseScraper):
                     logger.warning(f"Indeed: page navigation failed: {e}")
                     break
 
-                if _is_blocked(page):
+                if self._is_blocked(page):
                     logger.warning("Indeed: CAPTCHA/block detected. Saving partial results.")
                     break
 
-                # Extract job cards
-                job_cards = self._extract_job_cards(page)
+                # Primary: structured mosaic JSON embedded in the page.
+                # Fallback: CSS selector chains.
+                job_cards = self._extract_from_mosaic(page)
+                if not job_cards:
+                    job_cards = self._extract_job_cards(page)
                 if not job_cards:
                     logger.debug(f"Indeed: no job cards found at offset {offset}")
                     break
@@ -155,7 +146,7 @@ class IndeedScraper(BaseScraper):
                                 desc = self._fetch_description(page, record.job_id)
                                 record.description = desc
                                 jobs_in_context += 1
-                                if _is_blocked(page):
+                                if self._is_blocked(page):
                                     logger.warning("Indeed: blocked during description fetch")
                                     break
                             except Exception as e:
@@ -170,7 +161,7 @@ class IndeedScraper(BaseScraper):
             try:
                 if page:
                     page.close()
-                if ctx:
+                if ctx and not self._persistent:
                     ctx.close()
             except Exception:
                 pass
@@ -179,15 +170,101 @@ class IndeedScraper(BaseScraper):
         logger.info(f"Indeed: scraped {len(results)} jobs for '{keyword}'")
         return results
 
-    def _setup_page(self, page):
-        page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-GB', 'en']});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
-        """)
-        # Block resources to reduce fingerprint and speed up
-        page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot}", lambda r: r.abort())
-        page.route("**/*.css", lambda r: r.abort())
+    # ── Mosaic JSON extraction (primary) ─────────────────────────────────────
+
+    def _extract_from_mosaic(self, page) -> list[JobRecord]:
+        """Parse Indeed's embedded mosaic provider JSON — structured data,
+        immune to CSS class churn."""
+        try:
+            html = page.content()
+            match = MOSAIC_RE.search(html)
+            if not match:
+                logger.debug("Indeed: mosaic data not found in page")
+                return []
+            data = json.loads(match.group(1))
+            items = (
+                data.get("metaData", {})
+                .get("mosaicProviderJobCardsModel", {})
+                .get("results", [])
+            )
+        except Exception as e:
+            logger.warning(f"Indeed: mosaic extraction failed ({e}), falling back to selectors")
+            return []
+
+        records = []
+        for item in items:
+            try:
+                job_id = item.get("jobkey", "") or ""
+                title = item.get("displayTitle") or item.get("title") or "Unknown"
+                company = item.get("company") or None
+                location = item.get("formattedLocation") or item.get("jobLocationCity") or None
+
+                # Salary: prefer extracted over estimated, keep snippet text
+                salary_text = None
+                salary_min = salary_max = None
+                salary_period = None
+                snippet = item.get("salarySnippet") or {}
+                if isinstance(snippet, dict) and snippet.get("text"):
+                    salary_text = snippet["text"]
+                for sal_key in ("extractedSalary", "estimatedSalary"):
+                    sal = item.get(sal_key) or {}
+                    if isinstance(sal, dict) and (sal.get("min") or sal.get("max")):
+                        try:
+                            salary_min = float(sal["min"]) if sal.get("min") else None
+                            salary_max = float(sal["max"]) if sal.get("max") else None
+                        except (TypeError, ValueError):
+                            continue
+                        sal_type = str(sal.get("type", "")).lower()
+                        if "hour" in sal_type:
+                            salary_period = "hourly"
+                        elif "year" in sal_type or "annual" in sal_type:
+                            salary_period = "annual"
+                        break
+
+                posted_at = None
+                pub = item.get("pubDate")
+                if pub:
+                    try:
+                        posted_at = datetime.utcfromtimestamp(int(pub) / 1000).date().isoformat()
+                    except (TypeError, ValueError, OSError):
+                        pass
+
+                job_types = item.get("jobTypes") or []
+                job_type = ", ".join(str(t).lower() for t in job_types) if job_types else None
+
+                link = item.get("viewJobLink") or ""
+                if link.startswith("/"):
+                    apply_url = f"https://uk.indeed.com{link}"
+                elif job_id:
+                    apply_url = INDEED_JOB_URL.format(job_id=job_id)
+                else:
+                    apply_url = None
+
+                records.append(JobRecord(
+                    job_id=job_id,
+                    source="indeed",
+                    title=title,
+                    company=company,
+                    location=location,
+                    location_city=item.get("jobLocationCity") or None,
+                    location_postcode=item.get("jobLocationPostal") or None,
+                    salary_text=salary_text,
+                    salary_min=salary_min,
+                    salary_max=salary_max,
+                    salary_period=salary_period,
+                    job_type=job_type,
+                    posted_at=posted_at,
+                    apply_url=apply_url,
+                    scraped_at=datetime.utcnow().isoformat() + "Z",
+                ))
+            except Exception as e:
+                logger.debug(f"Indeed: mosaic item parse error: {e}")
+
+        if records:
+            logger.debug(f"Indeed: mosaic extraction got {len(records)} jobs")
+        return records
+
+    # ── CSS selector extraction (fallback) ───────────────────────────────────
 
     def _extract_job_cards(self, page) -> list[JobRecord]:
         records = []
@@ -301,7 +378,7 @@ class IndeedScraper(BaseScraper):
         url = INDEED_JOB_URL.format(job_id=job_id)
         page.goto(url, timeout=20000, wait_until="domcontentloaded")
         time.sleep(random.uniform(1, 3))
-        if _is_blocked(page):
+        if self._is_blocked(page):
             return None
         desc_el = page.query_selector("div#jobDescriptionText")
         if desc_el:

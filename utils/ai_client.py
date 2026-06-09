@@ -1,0 +1,178 @@
+"""Shared AI client with provider-chain failover: Gemini → Ollama → Anthropic.
+
+All AI calls in the project (contact enrichment, description parsing) go
+through ask_ai(), which also maintains the global, thread-safe call counter
+used for run statistics and budgets.
+"""
+
+import json
+import os
+import re
+import logging
+import threading
+from typing import Optional
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+_lock = threading.Lock()
+_ai_call_counter = 0
+_provider_failures: dict[str, int] = {}
+_dead_providers: set[str] = set()
+
+# A provider is skipped for the rest of the run after this many consecutive
+# hard failures, so 50 jobs don't each wait out the same quota error.
+_MAX_CONSECUTIVE_FAILURES = 2
+
+
+def _call_gemini(prompt: str, model: str, api_key: str, timeout: int) -> Optional[str]:
+    resp = requests.post(
+        GEMINI_URL.format(model=model),
+        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 512, "temperature": 0},
+        },
+        timeout=timeout,
+    )
+    if resp.status_code == 429:
+        raise RuntimeError("Gemini quota exhausted (HTTP 429)")
+    if resp.status_code == 403:
+        raise RuntimeError("Gemini API key invalid or unauthorised (HTTP 403)")
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Optional[str]:
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/generate",
+        json={"model": model, "prompt": prompt, "stream": False},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json().get("response", "")
+
+
+def _call_anthropic(prompt: str, model: str, timeout: int) -> Optional[str]:
+    import anthropic
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    client = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model=model,
+        max_tokens=512,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text if message.content else None
+
+
+def _build_chain(config) -> list[str]:
+    """Provider order: forced provider first if set, then the rest by default priority."""
+    chain = []
+    if getattr(config, "gemini_api_key", ""):
+        chain.append("gemini")
+    if getattr(config, "ollama_base_url", ""):
+        chain.append("ollama")
+    if os.getenv("ANTHROPIC_API_KEY"):
+        chain.append("anthropic")
+
+    forced = getattr(config, "ai_provider", "") or ""
+    if forced:
+        if forced in chain:
+            chain.remove(forced)
+        chain.insert(0, forced)
+    return chain
+
+
+def ask_ai(prompt: str, config, timeout: int = 60) -> Optional[str]:
+    """Send a prompt down the provider chain, returning the first response.
+
+    Counts one AI call per invocation regardless of how many providers were
+    attempted. Returns None when every provider fails.
+    """
+    global _ai_call_counter
+    with _lock:
+        _ai_call_counter += 1
+        call_no = _ai_call_counter
+
+    chain = _build_chain(config)
+    if not chain:
+        logger.warning("AI: no provider configured (set GEMINI_API_KEY, OLLAMA_BASE_URL or ANTHROPIC_API_KEY)")
+        return None
+
+    for provider in chain:
+        with _lock:
+            if provider in _dead_providers:
+                continue
+        try:
+            if provider == "gemini":
+                result = _call_gemini(prompt, config.gemini_model, config.gemini_api_key, timeout)
+            elif provider == "ollama":
+                result = _call_ollama(prompt, getattr(config, "ai_model", "llama3.2"),
+                                      config.ollama_base_url, timeout)
+            elif provider == "anthropic":
+                result = _call_anthropic(prompt, getattr(config, "anthropic_model",
+                                                         "claude-haiku-4-5-20251001"), timeout)
+            else:
+                logger.warning(f"AI: unknown provider '{provider}', skipping")
+                continue
+
+            if result:
+                with _lock:
+                    _provider_failures[provider] = 0
+                logger.debug(f"AI call #{call_no}: {provider} responded")
+                return result
+            raise RuntimeError("empty response")
+
+        except Exception as e:
+            with _lock:
+                _provider_failures[provider] = _provider_failures.get(provider, 0) + 1
+                failures = _provider_failures[provider]
+                if failures >= _MAX_CONSECUTIVE_FAILURES:
+                    _dead_providers.add(provider)
+            logger.warning(
+                f"AI: {provider} failed ({e})"
+                + (f" — disabled for the rest of this run" if failures >= _MAX_CONSECUTIVE_FAILURES else "")
+                + (", failing over" if provider != chain[-1] else "")
+            )
+
+    logger.error("AI: all providers in the chain failed")
+    return None
+
+
+def parse_ai_json(text: str) -> Optional[dict]:
+    """Strip markdown fences and parse a JSON object from an AI response."""
+    if not text:
+        return None
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except Exception:
+                pass
+    return None
+
+
+def reset_counter():
+    global _ai_call_counter
+    with _lock:
+        _ai_call_counter = 0
+        _provider_failures.clear()
+        _dead_providers.clear()
+
+
+def get_call_count() -> int:
+    with _lock:
+        return _ai_call_counter

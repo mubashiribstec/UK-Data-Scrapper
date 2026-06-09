@@ -1,5 +1,4 @@
 import re
-import json
 import time
 import logging
 from datetime import datetime
@@ -8,46 +7,17 @@ import requests
 from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, JobRecord
+from scrapers.jsonld import strip_html as _strip_html, find_jobpostings, parse_jobposting
 from utils.rate_limiter import RateLimiter
 from utils.user_agents import get_headers
+from utils.retry import retry
+from utils.proxy import apply_proxy, rotate_proxy
 
 logger = logging.getLogger(__name__)
 
 REED_SEARCH_URL = "https://www.reed.co.uk/jobs/{keyword}-jobs"
-
-
-def _strip_html(html_text: str) -> str:
-    if not html_text:
-        return ""
-    soup = BeautifulSoup(html_text, "lxml")
-    return soup.get_text(separator=" ", strip=True)
-
-
-def _parse_salary_ld(salary_obj: dict) -> tuple[Optional[float], Optional[float], Optional[str]]:
-    if not salary_obj or not isinstance(salary_obj, dict):
-        return None, None, None
-    value = salary_obj.get("value", {})
-    if isinstance(value, dict):
-        min_val = value.get("minValue")
-        max_val = value.get("maxValue")
-        unit = value.get("unitText", "").lower()
-    else:
-        min_val = max_val = value
-        unit = salary_obj.get("unitText", "").lower()
-
-    period = None
-    if "hour" in unit:
-        period = "hourly"
-    elif "year" in unit or "annual" in unit or "month" in unit:
-        period = "annual"
-
-    try:
-        sal_min = float(min_val) if min_val else None
-        sal_max = float(max_val) if max_val else None
-    except (TypeError, ValueError):
-        sal_min = sal_max = None
-
-    return sal_min, sal_max, period
+REED_API_SEARCH = "https://www.reed.co.uk/api/1.0/search"
+REED_API_DETAILS = "https://www.reed.co.uk/api/1.0/jobs/{job_id}"
 
 
 def _reed_headers(referer: str = "https://www.reed.co.uk/") -> dict:
@@ -70,12 +40,25 @@ def _reed_headers(referer: str = "https://www.reed.co.uk/") -> dict:
     }
 
 
+def _ddmmyyyy_to_iso(raw: Optional[str]) -> Optional[str]:
+    """Reed API dates come as DD/MM/YYYY — convert to ISO date."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%d/%m/%Y").date().isoformat()
+    except ValueError:
+        return raw
+
+
 class ReedScraper(BaseScraper):
     def __init__(self, config):
         super().__init__(config)
         self.rate_limiter = RateLimiter(config.domain_delays)
         self.session = requests.Session()
+        apply_proxy(self.session)
         self._warmed_up = False
+        self.api_key = getattr(config, "reed_api_key", "") or ""
+        self._api_disabled = False   # set when the key is rejected (401/403)
 
     def _warmup(self):
         """Visit Reed homepage first to get cookies — prevents 403 on search pages."""
@@ -92,6 +75,162 @@ class ReedScraper(BaseScraper):
             self._warmed_up = True   # don't retry
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
+        if self.api_key and not self._api_disabled:
+            return self._scrape_api(keyword, location)
+        return self._scrape_html(keyword, location)
+
+    # ── Official Reed Jobseeker API (preferred) ──────────────────────────────
+
+    @retry(max_attempts=3, base_delay=2.0)
+    def _api_get(self, url: str, params: dict = None):
+        self.rate_limiter.wait("www.reed.co.uk")
+        return self.session.get(
+            url,
+            params=params,
+            auth=(self.api_key, ""),
+            timeout=self.config.request_timeout,
+        )
+
+    def _scrape_api(self, keyword: str, location: str) -> list[JobRecord]:
+        results = []
+        skip = 0
+        max_results = self.config.max_results_per_keyword
+
+        while len(results) < max_results:
+            params = {
+                "keywords": keyword,
+                "resultsToTake": min(100, max_results - len(results)),
+                "resultsToSkip": skip,
+            }
+            # Reed's locationName is a place-name geocoder — country names
+            # produce ambiguousLocations, so omit it for UK-wide searches.
+            if location and location.lower() not in ("united kingdom", "uk"):
+                params["locationName"] = location
+
+            try:
+                resp = self._api_get(REED_API_SEARCH, params)
+            except Exception as e:
+                logger.error(f"Reed API request failed for '{keyword}': {e}")
+                break
+
+            if resp.status_code in (401, 403):
+                logger.error(
+                    f"Reed API key rejected (HTTP {resp.status_code}) — check REED_API_KEY. "
+                    "Falling back to HTML scraping for the rest of this run."
+                )
+                self._api_disabled = True
+                return self._scrape_html(keyword, location)
+
+            if resp.status_code != 200:
+                logger.warning(f"Reed API returned HTTP {resp.status_code} for '{keyword}'")
+                break
+
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error("Reed API: response was not JSON")
+                break
+
+            batch = data.get("results", []) or []
+            if not batch:
+                break
+
+            for item in batch:
+                if len(results) >= max_results:
+                    break
+                try:
+                    results.append(self._parse_api_job(item))
+                except Exception as e:
+                    logger.warning(f"Reed API job parse error: {e}")
+
+            total = data.get("totalResults", 0)
+            skip += len(batch)
+            if skip >= total:
+                break
+
+        # Search results only carry a truncated description snippet — fetch
+        # full details for the first 20 jobs (mirrors the Indeed pattern).
+        for record in results[:20]:
+            try:
+                self._fetch_api_details(record)
+            except Exception as e:
+                logger.debug(f"Reed API details fetch failed for {record.job_id}: {e}")
+
+        logger.info(f"Reed API: scraped {len(results)} jobs for '{keyword}'")
+        return results
+
+    def _parse_api_job(self, item: dict) -> JobRecord:
+        job_id = str(item.get("jobId", ""))
+        sal_min = item.get("minimumSalary")
+        sal_max = item.get("maximumSalary")
+        sal_min = float(sal_min) if sal_min is not None else None
+        sal_max = float(sal_max) if sal_max is not None else None
+
+        salary_text = None
+        salary_period = None
+        if sal_min is not None or sal_max is not None:
+            # Heuristic refined later by details salaryType when fetched
+            ref = sal_max if sal_max is not None else sal_min
+            salary_period = "hourly" if ref is not None and ref < 1000 else "annual"
+            period_label = " an hour" if salary_period == "hourly" else " a year"
+            if sal_min is not None and sal_max is not None and sal_min != sal_max:
+                salary_text = f"£{sal_min:,.2f} - £{sal_max:,.2f}{period_label}".replace(".00", "")
+            else:
+                salary_text = f"£{(sal_min if sal_min is not None else sal_max):,.2f}{period_label}".replace(".00", "")
+
+        snippet = _strip_html(item.get("jobDescription", "") or "")
+
+        return JobRecord(
+            job_id=job_id,
+            source="reed",
+            title=item.get("jobTitle", "Unknown"),
+            company=item.get("employerName"),
+            location=item.get("locationName"),
+            salary_text=salary_text,
+            salary_min=sal_min,
+            salary_max=sal_max,
+            salary_period=salary_period,
+            description=snippet[:2000] if snippet else None,
+            posted_at=_ddmmyyyy_to_iso(item.get("date")),
+            expires_at=_ddmmyyyy_to_iso(item.get("expirationDate")),
+            apply_url=item.get("jobUrl"),
+            scraped_at=datetime.utcnow().isoformat() + "Z",
+        )
+
+    def _fetch_api_details(self, record: JobRecord):
+        resp = self._api_get(REED_API_DETAILS.format(job_id=record.job_id))
+        if resp.status_code != 200:
+            return
+        detail = resp.json()
+
+        full_desc = _strip_html(detail.get("jobDescription", "") or "")
+        if full_desc:
+            record.description = full_desc[:2000]
+
+        if detail.get("contractType") or detail.get("fullTime") is not None:
+            parts = []
+            if detail.get("fullTime"):
+                parts.append("full-time")
+            if detail.get("partTime"):
+                parts.append("part-time")
+            contract = (detail.get("contractType") or "").lower()
+            if contract and contract not in parts:
+                parts.append(contract)
+            if parts:
+                record.job_type = ", ".join(parts)
+
+        salary_type = (detail.get("salaryType") or "").lower()
+        if "hour" in salary_type:
+            record.salary_period = "hourly"
+        elif "annum" in salary_type or "year" in salary_type:
+            record.salary_period = "annual"
+
+        if detail.get("externalUrl") and not record.company_url:
+            record.company_url = detail["externalUrl"]
+
+    # ── HTML scraping fallback (no API key) ──────────────────────────────────
+
+    def _scrape_html(self, keyword: str, location: str) -> list[JobRecord]:
         if not self._warmed_up:
             self._warmup()
 
@@ -127,6 +266,7 @@ class ReedScraper(BaseScraper):
                 if page == 1:
                     # First page 403: re-warm and retry once
                     logger.warning("Reed: 403 on first page — refreshing session and retrying")
+                    rotate_proxy(self.session)
                     self._warmed_up = False
                     self._warmup()
                     time.sleep(3)
@@ -156,25 +296,7 @@ class ReedScraper(BaseScraper):
                 break
 
             soup = BeautifulSoup(resp.text, "lxml")
-            ld_json_tags = soup.find_all("script", type="application/ld+json")
-
-            page_jobs = []
-            for tag in ld_json_tags:
-                try:
-                    data = json.loads(tag.string or "")
-                    if isinstance(data, list):
-                        for item in data:
-                            if item.get("@type") == "JobPosting":
-                                page_jobs.append(item)
-                    elif isinstance(data, dict):
-                        if data.get("@type") == "JobPosting":
-                            page_jobs.append(data)
-                        elif data.get("@type") == "ItemList":
-                            for item in data.get("itemListElement", []):
-                                if isinstance(item, dict) and item.get("@type") == "JobPosting":
-                                    page_jobs.append(item)
-                except (json.JSONDecodeError, AttributeError):
-                    pass
+            page_jobs = find_jobpostings(soup)
 
             if not page_jobs:
                 # Fallback: try to parse job cards from HTML
@@ -192,7 +314,7 @@ class ReedScraper(BaseScraper):
                     if collected >= self.config.max_results_per_keyword:
                         break
                     try:
-                        record = self._parse_ld_json(job_data)
+                        record = parse_jobposting(job_data, "reed")
                         results.append(record)
                         collected += 1
                     except Exception as e:
@@ -206,96 +328,6 @@ class ReedScraper(BaseScraper):
 
         logger.info(f"Reed: scraped {len(results)} jobs for '{keyword}'")
         return results
-
-    def _parse_ld_json(self, data: dict) -> JobRecord:
-        identifier = data.get("identifier", {})
-        job_id = str(identifier.get("value", "")) if isinstance(identifier, dict) else str(identifier)
-        if not job_id:
-            job_id = data.get("url", "").split("/")[-1] or str(hash(data.get("title", "")))
-
-        title = data.get("title", "Unknown")
-        org = data.get("hiringOrganization", {}) or {}
-        company = org.get("name") if isinstance(org, dict) else None
-        company_url = org.get("sameAs") if isinstance(org, dict) else None
-
-        job_location = data.get("jobLocation", {})
-        address = {}
-        if isinstance(job_location, list) and job_location:
-            job_location = job_location[0]
-        if isinstance(job_location, dict):
-            address = job_location.get("address", {}) or {}
-
-        location_city = address.get("addressLocality") if isinstance(address, dict) else None
-        location_postcode = address.get("postalCode") if isinstance(address, dict) else None
-        location_region = address.get("addressRegion") if isinstance(address, dict) else None
-        location_parts = [p for p in [location_city, location_region, location_postcode] if p]
-        location = ", ".join(location_parts) if location_parts else None
-
-        salary_obj = data.get("baseSalary", {})
-        sal_min, sal_max, sal_period = _parse_salary_ld(salary_obj)
-
-        # Build human-readable salary_text from parsed values
-        currency = data.get("salaryCurrency", "GBP")
-        symbol = "£" if currency in ("GBP", "") else currency + " "
-        if sal_min is not None and sal_max is not None:
-            period_label = {"hourly": " an hour", "annual": " a year"}.get(sal_period, "")
-            if sal_min == sal_max:
-                salary_text = f"{symbol}{sal_min:,.2f}{period_label}".replace(".00", "")
-            else:
-                salary_text = f"{symbol}{sal_min:,.2f} - {symbol}{sal_max:,.2f}{period_label}".replace(".00", "")
-        else:
-            salary_text = None
-
-        posted_at = data.get("datePosted")
-        expires_at = data.get("validThrough")
-        job_type_raw = data.get("employmentType", "")
-        if isinstance(job_type_raw, list):
-            job_type = ", ".join(job_type_raw).lower()
-        else:
-            job_type = str(job_type_raw).lower() if job_type_raw else None
-
-        apply_url = data.get("url")
-        description = _strip_html(data.get("description", ""))
-
-        # Extract requirements from JSON-LD schema fields
-        requirements = []
-        for field_key in ("qualifications", "experienceRequirements", "skills"):
-            val = data.get(field_key)
-            if isinstance(val, list):
-                requirements.extend(str(v) for v in val if v)
-            elif isinstance(val, str) and val:
-                requirements.extend(line.strip() for line in val.splitlines() if line.strip())
-
-        # Extract benefits from JSON-LD jobBenefits field
-        benefits = []
-        bens_raw = data.get("jobBenefits", "")
-        if isinstance(bens_raw, list):
-            benefits = [str(b) for b in bens_raw if b]
-        elif isinstance(bens_raw, str) and bens_raw:
-            benefits = [line.strip() for line in bens_raw.splitlines() if line.strip()]
-
-        return JobRecord(
-            job_id=job_id,
-            source="reed",
-            title=title,
-            company=company,
-            company_url=company_url,
-            location=location,
-            location_city=location_city,
-            location_postcode=location_postcode,
-            salary_text=salary_text,
-            salary_min=sal_min,
-            salary_max=sal_max,
-            salary_period=sal_period,
-            job_type=job_type,
-            description=description[:2000] if description else None,
-            requirements=requirements,
-            benefits=benefits,
-            posted_at=posted_at,
-            expires_at=expires_at,
-            apply_url=apply_url,
-            scraped_at=datetime.utcnow().isoformat() + "Z",
-        )
 
     def _parse_job_cards(self, soup: BeautifulSoup) -> list[JobRecord]:
         """Fallback: parse job cards from HTML when JSON-LD is missing."""

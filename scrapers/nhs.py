@@ -8,6 +8,8 @@ import requests
 from scrapers.base import BaseScraper, JobRecord
 from utils.rate_limiter import RateLimiter
 from utils.user_agents import get_headers
+from utils.retry import retry
+from utils.proxy import apply_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +54,21 @@ class NHSScraper(BaseScraper):
         super().__init__(config)
         self.rate_limiter = RateLimiter(config.domain_delays)
         self.session = requests.Session()
+        apply_proxy(self.session)
         # NHS API requires JSON accept header — without it the API returns HTML
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
         })
+
+    @retry(max_attempts=3, base_delay=2.0)
+    def _api_get(self, url: str, params: dict = None):
+        return self.session.get(
+            url,
+            params=params,
+            headers={**get_headers(), "Accept": "application/json"},
+            timeout=self.config.request_timeout,
+        )
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
         results = []
@@ -74,12 +86,7 @@ class NHSScraper(BaseScraper):
                 "sortBy": "PublishedDesc",
             }
             try:
-                resp = self.session.get(
-                    NHS_SEARCH_URL,
-                    params=params,
-                    headers={**get_headers(), "Accept": "application/json"},
-                    timeout=self.config.request_timeout,
-                )
+                resp = self._api_get(NHS_SEARCH_URL, params)
                 resp.raise_for_status()
 
                 if not resp.content:
@@ -213,7 +220,7 @@ class NHSScraper(BaseScraper):
     def _fetch_detail(self, job_id: str) -> Optional[dict]:
         self.rate_limiter.wait("api.jobs.nhs.uk")
         url = NHS_DETAIL_URL.format(id=job_id)
-        resp = self.session.get(url, headers={**get_headers(), "Accept": "application/json"}, timeout=self.config.request_timeout)
+        resp = self._api_get(url)
         if resp.status_code == 200 and resp.content:
             try:
                 return resp.json()

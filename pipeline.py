@@ -94,8 +94,12 @@ def run_pipeline(
     global _partial_jobs, _partial_contacts, _interrupted
     _interrupted = False
 
-    from enrichers.ai_enricher import reset_counter as _reset_ai
+    from utils.ai_client import reset_counter as _reset_ai
     _reset_ai()
+
+    if getattr(config, "proxies_file", ""):
+        from utils.proxy import load_proxies
+        load_proxies(config.proxies_file)
 
     signal.signal(signal.SIGINT, _handle_interrupt)
 
@@ -112,14 +116,19 @@ def run_pipeline(
     from scrapers.nhs import NHSScraper
     from scrapers.reed import ReedScraper
     from scrapers.indeed import IndeedScraper
+    from scrapers.totaljobs import TotalJobsScraper
+    from scrapers.cvlibrary import CVLibraryScraper
 
-    scraper_classes = [NHSScraper, ReedScraper, IndeedScraper]
+    scraper_classes = [NHSScraper, ReedScraper, IndeedScraper, TotalJobsScraper, CVLibraryScraper]
 
     # Stage 1: Run scrapers in parallel
+    # max_workers=4: up to 3 Playwright browsers plus the requests scrapers is
+    # already heavy; don't run all 5 sources fully concurrently.
     logger.info("Stage 1: Running scrapers in parallel...")
     all_raw_jobs = []
+    per_source_raw: dict[str, int] = {}
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(_run_scraper, cls, config, sources_filter): cls.__name__
             for cls in scraper_classes
@@ -129,8 +138,10 @@ def run_pipeline(
                 break
             name = futures[future]
             try:
-                batch = future.result(timeout=300)
+                batch = future.result(timeout=600)
                 all_raw_jobs.extend(batch)
+                if batch:
+                    per_source_raw[batch[0].source] = per_source_raw.get(batch[0].source, 0) + len(batch)
                 logger.info(f"{name}: returned {len(batch)} raw jobs")
             except Exception as e:
                 logger.error(f"{name} future failed: {e}")
@@ -165,23 +176,34 @@ def run_pipeline(
     logger.info("Stage 3: Cleaning job records...")
     unique_jobs = [_clean_job(job, config) for job in unique_jobs]
 
+    # Stage 3b: Mine job descriptions (regex contacts + optional AI parsing)
+    logger.info("Stage 3b: Mining job descriptions...")
+    seed_contacts = {}
+    try:
+        from processing.ai_parser import parse_jobs
+        seed_contacts = parse_jobs(unique_jobs, config)
+    except Exception as e:
+        logger.error(f"Description mining failed: {e}")
+        errors += 1
+
     _partial_jobs = unique_jobs
 
     if _interrupted:
-        return _save_partial(unique_jobs, {}, run_id, started_at, errors, duplicates_removed, config, dry_run)
+        return _save_partial(unique_jobs, seed_contacts, run_id, started_at, errors, duplicates_removed, config, dry_run)
 
     # Stage 4: Contact enrichment
-    contacts = {}
+    contacts = seed_contacts
     if config.enrich_contacts:
         logger.info("Stage 4: Enriching contact data...")
         orchestrator = EnrichmentOrchestrator(config)
         try:
-            contacts = orchestrator.enrich_batch(unique_jobs)
+            contacts = orchestrator.enrich_batch(unique_jobs, seed_contacts=seed_contacts)
         except Exception as e:
             logger.error(f"Enrichment failed: {e}")
             errors += 1
     else:
-        logger.info("Stage 4: Contact enrichment skipped (--no-enrich)")
+        logger.info("Stage 4: Contact enrichment skipped (--no-enrich) — "
+                    f"keeping {len(seed_contacts)} contacts mined from job descriptions")
 
     _partial_contacts = contacts
 
@@ -189,9 +211,14 @@ def run_pipeline(
         return _save_partial(unique_jobs, contacts, run_id, started_at, errors, duplicates_removed, config, dry_run)
 
     # Stage 5: Export
-    from enrichers.ai_enricher import get_call_count
+    from utils.ai_client import get_call_count
+    from processing.quality import build_quality_report, print_quality_report
     ai_calls = get_call_count()
     finished_at = datetime.utcnow().isoformat() + "Z"
+
+    quality_report = build_quality_report(
+        unique_jobs, contacts, per_source_raw, duplicates_removed, ai_calls, errors
+    )
 
     run_stats = {
         "started_at": started_at,
@@ -199,6 +226,7 @@ def run_pipeline(
         "duplicates_removed": duplicates_removed,
         "ai_calls": ai_calls,
         "errors": errors,
+        "quality_report": quality_report,
     }
 
     if dry_run:
@@ -230,7 +258,8 @@ def _export_all(jobs, contacts, config, run_id, run_stats) -> list:
 
     if "json" in formats:
         from exporters.json_export import export_json
-        path = export_json(jobs, contacts, config.output_dir)
+        path = export_json(jobs, contacts, config.output_dir,
+                           quality_report=run_stats.get("quality_report"))
         if path:
             out_files.append(path)
 
@@ -259,7 +288,7 @@ def _save_partial(jobs, contacts, run_id, started_at, errors, duplicates_removed
     if dry_run or not jobs:
         return {"jobs": jobs, "contacts": contacts, "run_id": run_id, "output_files": []}
     logger.info(f"Saving {len(jobs)} partial results before exit...")
-    from enrichers.ai_enricher import get_call_count
+    from utils.ai_client import get_call_count
     run_stats = {
         "started_at": started_at,
         "finished_at": datetime.utcnow().isoformat() + "Z",
@@ -287,3 +316,7 @@ def _print_summary(jobs, contacts, run_stats):
     print(f"AI calls made:            {ai_calls}")
     print(f"Errors:                   {run_stats.get('errors', 0)}")
     print("=" * 60 + "\n")
+
+    if run_stats.get("quality_report"):
+        from processing.quality import print_quality_report
+        print_quality_report(run_stats["quality_report"])
