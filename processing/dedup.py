@@ -23,8 +23,13 @@ def _normalise(text: str) -> str:
     return text.strip()
 
 
-def _content_hash(title: str, company: str, location: str) -> str:
-    key = f"{_normalise(title)}|{_normalise(company)}|{_normalise(location)}"
+def _content_hash(title: str, company: str, location: str, job_id: str = "") -> str:
+    t, c, l = _normalise(title), _normalise(company), _normalise(location)
+    # When all three fields are empty, fall back to job_id to avoid false collapse
+    if not t and not c and not l:
+        key = f"__fallback__|{job_id}"
+    else:
+        key = f"{t}|{c}|{l}"
     return hashlib.md5(key.encode()).hexdigest()[:12]
 
 
@@ -44,7 +49,7 @@ def deduplicate(jobs: list[JobRecord]) -> list[JobRecord]:
         source_ids.add(job.job_id)
 
         # Level 2: cross-source content hash
-        h = _content_hash(job.title or "", job.company or "", job.location or "")
+        h = _content_hash(job.title or "", job.company or "", job.location or "", job.job_id or "")
         job._hash = h
 
         if h in seen_hashes:

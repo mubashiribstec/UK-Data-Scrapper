@@ -77,7 +77,7 @@ class NHSScraper(BaseScraper):
                 resp = self.session.get(
                     NHS_SEARCH_URL,
                     params=params,
-                    headers=get_headers(),
+                    headers={**get_headers(), "Accept": "application/json"},
                     timeout=self.config.request_timeout,
                 )
                 resp.raise_for_status()
@@ -213,7 +213,7 @@ class NHSScraper(BaseScraper):
     def _fetch_detail(self, job_id: str) -> Optional[dict]:
         self.rate_limiter.wait("api.jobs.nhs.uk")
         url = NHS_DETAIL_URL.format(id=job_id)
-        resp = self.session.get(url, headers=get_headers(), timeout=self.config.request_timeout)
+        resp = self.session.get(url, headers={**get_headers(), "Accept": "application/json"}, timeout=self.config.request_timeout)
         if resp.status_code == 200 and resp.content:
             try:
                 return resp.json()

@@ -196,16 +196,87 @@ class IndeedScraper(BaseScraper):
             for card in cards:
                 try:
                     job_id = card.get_attribute("data-jk") or ""
-                    title_el = card.query_selector("[data-testid='jobTitle'] a, h2[data-testid='jobTitle']")
-                    title = title_el.inner_text().strip() if title_el else "Unknown"
-                    company_el = card.query_selector("[data-testid='company-name']")
-                    company = company_el.inner_text().strip() if company_el else None
-                    location_el = card.query_selector("[data-testid='text-location']")
-                    location = location_el.inner_text().strip() if location_el else None
-                    salary_el = card.query_selector("[data-testid='attribute_snippet_testid']")
-                    salary_text = salary_el.inner_text().strip() if salary_el else None
-                    date_el = card.query_selector("[data-testid='myJobsStateDate'], span.date")
-                    posted_at = date_el.inner_text().strip() if date_el else None
+
+                    # Title — try multiple selector patterns used by Indeed across versions
+                    title = None
+                    for sel in [
+                        "h2.jobTitle a span[title]",
+                        "h2.jobTitle span[title]",
+                        "h2.jobTitle a",
+                        "h2.jobTitle",
+                        "[data-testid='jobTitle'] a span[title]",
+                        "[data-testid='jobTitle'] a",
+                        "[data-testid='jobTitle']",
+                        "a[id^='job_'] span[title]",
+                        "span[title]",
+                    ]:
+                        el = card.query_selector(sel)
+                        if el:
+                            # Prefer the title attribute over inner text (cleaner)
+                            title = el.get_attribute("title") or el.inner_text().strip()
+                            if title:
+                                break
+                    if not title:
+                        title = "Unknown"
+
+                    # Company
+                    company = None
+                    for sel in [
+                        "[data-testid='company-name']",
+                        ".companyName",
+                        "span.companyName",
+                        "[class*='companyName']",
+                        "[class*='company-name']",
+                        "a[data-tn-element='companyName']",
+                    ]:
+                        el = card.query_selector(sel)
+                        if el:
+                            company = el.inner_text().strip() or None
+                            if company:
+                                break
+
+                    # Location
+                    location = None
+                    for sel in [
+                        "[data-testid='text-location']",
+                        ".companyLocation",
+                        "[class*='companyLocation']",
+                        "[class*='job-location']",
+                        "[class*='resultContent'] [class*='location']",
+                    ]:
+                        el = card.query_selector(sel)
+                        if el:
+                            location = el.inner_text().strip() or None
+                            if location:
+                                break
+
+                    # Salary
+                    salary_text = None
+                    for sel in [
+                        "[data-testid='attribute_snippet_testid']",
+                        ".salary-snippet-container",
+                        "[class*='salary-snippet']",
+                        "[class*='salaryText']",
+                        ".metadata.salary-snippet-container",
+                    ]:
+                        el = card.query_selector(sel)
+                        if el:
+                            salary_text = el.inner_text().strip() or None
+                            if salary_text:
+                                break
+
+                    # Date posted
+                    posted_at = None
+                    for sel in [
+                        "[data-testid='myJobsStateDate']",
+                        "span.date",
+                        "[class*='date']",
+                    ]:
+                        el = card.query_selector(sel)
+                        if el:
+                            posted_at = el.inner_text().strip() or None
+                            if posted_at:
+                                break
 
                     apply_url = INDEED_JOB_URL.format(job_id=job_id) if job_id else None
 
