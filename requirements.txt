@@ -6,7 +6,6 @@ lxml>=5.0.0
 fake-useragent>=1.4.0
 
 # Data processing
-pandas>=2.1.0
 openpyxl>=3.1.2
 phonenumbers>=8.13.0
 email-validator>=2.1.0

@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     apply_url TEXT,
     description TEXT,
     requirements TEXT,
+    benefits TEXT,
+    sources TEXT,
     _hash TEXT,
     scraped_at TEXT,
     run_id TEXT,
@@ -94,16 +96,17 @@ def export_sqlite(jobs: list, contacts: dict, db_path: str, run_id: str, run_sta
                         (job_id, source, title, company, location, location_city,
                          location_postcode, salary_text, salary_min, salary_max,
                          salary_period, job_type, posted_at, expires_at, apply_url,
-                         description, requirements, _hash, scraped_at, run_id)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         description, requirements, benefits, sources, _hash, scraped_at, run_id)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             job.job_id, job.source, job.title, job.company,
                             job.location, job.location_city, job.location_postcode,
                             job.salary_text, job.salary_min, job.salary_max,
                             job.salary_period, job.job_type, job.posted_at,
                             job.expires_at, job.apply_url, job.description,
-                            json.dumps(job.requirements), job._hash,
-                            job.scraped_at, run_id,
+                            json.dumps(job.requirements), json.dumps(job.benefits),
+                            json.dumps(job.sources or [job.source]),
+                            job._hash, job.scraped_at, run_id,
                         )
                     )
                     jobs_new += 1
@@ -125,7 +128,7 @@ def export_sqlite(jobs: list, contacts: dict, db_path: str, run_id: str, run_sta
                         contact.address,
                         contact.company_website,
                         contact.company_number,
-                        contact.contact_confidence,
+                        contact.confidence_score,
                         1 if contact.ai_used else 0,
                         json.dumps(contact.enrichment_sources),
                         contact.enriched_at,

@@ -127,12 +127,10 @@ def parse_salary(text: str) -> tuple[Optional[float], Optional[float], Optional[
 
     sal_min, sal_max = min(parsed), max(parsed)
 
-    # Compute annual equivalent if hourly
-    if period == "hourly":
-        hourly_min = sal_min
-        hourly_max = sal_max
-        # Also expose annual equivalent as extra annotation (not stored separately here)
-        _ = hourly_min * 37.5 * 52  # noqa
+    # For hourly rates, keep the raw hourly values as min/max.
+    # The annual equivalent (hourly × 37.5 × 52) is stored separately only if
+    # salary_period == "hourly" — callers can compute it when needed.
+    # We do NOT overwrite sal_min/sal_max so the raw hourly figure is preserved.
 
     return sal_min, sal_max, period
 

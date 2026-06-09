@@ -166,7 +166,18 @@ class ReedScraper(BaseScraper):
 
         salary_obj = data.get("baseSalary", {})
         sal_min, sal_max, sal_period = _parse_salary_ld(salary_obj)
-        salary_text = data.get("salaryCurrency", "")
+
+        # Build human-readable salary_text from parsed values
+        currency = data.get("salaryCurrency", "GBP")
+        symbol = "£" if currency in ("GBP", "") else currency + " "
+        if sal_min is not None and sal_max is not None:
+            period_label = {"hourly": " an hour", "annual": " a year"}.get(sal_period, "")
+            if sal_min == sal_max:
+                salary_text = f"{symbol}{sal_min:,.2f}{period_label}".replace(".00", "")
+            else:
+                salary_text = f"{symbol}{sal_min:,.2f} - {symbol}{sal_max:,.2f}{period_label}".replace(".00", "")
+        else:
+            salary_text = None
 
         posted_at = data.get("datePosted")
         expires_at = data.get("validThrough")
@@ -179,6 +190,23 @@ class ReedScraper(BaseScraper):
         apply_url = data.get("url")
         description = _strip_html(data.get("description", ""))
 
+        # Extract requirements from JSON-LD schema fields
+        requirements = []
+        for field_key in ("qualifications", "experienceRequirements", "skills"):
+            val = data.get(field_key)
+            if isinstance(val, list):
+                requirements.extend(str(v) for v in val if v)
+            elif isinstance(val, str) and val:
+                requirements.extend(line.strip() for line in val.splitlines() if line.strip())
+
+        # Extract benefits from JSON-LD jobBenefits field
+        benefits = []
+        bens_raw = data.get("jobBenefits", "")
+        if isinstance(bens_raw, list):
+            benefits = [str(b) for b in bens_raw if b]
+        elif isinstance(bens_raw, str) and bens_raw:
+            benefits = [line.strip() for line in bens_raw.splitlines() if line.strip()]
+
         return JobRecord(
             job_id=job_id,
             source="reed",
@@ -188,12 +216,14 @@ class ReedScraper(BaseScraper):
             location=location,
             location_city=location_city,
             location_postcode=location_postcode,
-            salary_text=salary_text or None,
+            salary_text=salary_text,
             salary_min=sal_min,
             salary_max=sal_max,
             salary_period=sal_period,
             job_type=job_type,
             description=description[:2000] if description else None,
+            requirements=requirements,
+            benefits=benefits,
             posted_at=posted_at,
             expires_at=expires_at,
             apply_url=apply_url,

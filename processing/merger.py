@@ -19,7 +19,7 @@ class ContactRecord:
     enrichment_sources: list = field(default_factory=list)
     ai_used: bool = False
     enriched_at: Optional[str] = None
-    contact_confidence: int = 0
+    confidence_score: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -34,7 +34,7 @@ class ContactRecord:
             "enrichment_sources": self.enrichment_sources,
             "ai_used": self.ai_used,
             "enriched_at": self.enriched_at,
-            "contact_confidence": self.contact_confidence,
+            "confidence_score": self.confidence_score,
         }
 
 
@@ -113,7 +113,7 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
     merged.enriched_at = max(timestamps) if timestamps else None
 
     # Confidence score
-    merged.contact_confidence = _compute_confidence(merged)
+    merged.confidence_score = _compute_confidence(merged)
 
     return merged
 

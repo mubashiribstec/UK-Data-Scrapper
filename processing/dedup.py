@@ -49,28 +49,26 @@ def deduplicate(jobs: list[JobRecord]) -> list[JobRecord]:
 
         if h in seen_hashes:
             existing = seen_hashes[h]
-            # Merge: keep the richer record
             merged = _merge_richer(existing, job)
-            # Update sources list
-            if not hasattr(merged, "_sources"):
-                merged._sources = [existing.source]
-            if job.source not in merged._sources:
-                merged._sources.append(job.source)
+            if not merged.sources:
+                merged.sources = [existing.source]
+            if job.source not in merged.sources:
+                merged.sources.append(job.source)
             seen_hashes[h] = merged
             duplicate_count += 1
             continue
 
-        job._sources = [job.source]
+        job.sources = [job.source]
         seen_hashes[h] = job
         result.append(job)
 
     # Level 3: fuzzy title match within same company
     result = _fuzzy_dedup(result)
 
-    # Attach hashes and sources
+    # Ensure all jobs have sources populated
     for job in result:
-        if not hasattr(job, "_sources"):
-            job._sources = [job.source]
+        if not job.sources:
+            job.sources = [job.source]
 
     logger.info(f"Dedup: {len(jobs)} → {len(result)} unique ({duplicate_count} removed)")
     return result

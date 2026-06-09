@@ -31,7 +31,7 @@ def export_excel(jobs: list, contacts: dict, output_dir: str, run_stats: dict = 
     _write_header_row(ws_jobs, job_headers)
 
     for job in jobs:
-        sources = "|".join(getattr(job, "_sources", [job.source]))
+        sources = "|".join(job.sources or [job.source])
         row = [
             job.title,
             job.company,
@@ -76,7 +76,7 @@ def export_excel(jobs: list, contacts: dict, output_dir: str, run_stats: dict = 
     red_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
 
     for row_idx, (company, contact) in enumerate(contacts.items(), start=2):
-        confidence = contact.contact_confidence
+        confidence = contact.confidence_score
         row = [
             contact.company,
             " | ".join(contact.phone_numbers),

@@ -20,8 +20,8 @@ def export_json(jobs: list, contacts: dict, output_dir: str) -> str:
         else:
             job_dict["contact"] = None
 
-        sources = getattr(job, "_sources", [job.source])
-        job_dict["sources"] = sources
+        # sources is a proper field on JobRecord (populated by dedup or to_dict fallback)
+        job_dict["sources"] = job.sources or [job.source]
 
         output.append(job_dict)
 

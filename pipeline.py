@@ -1,9 +1,10 @@
 import logging
+import re
 import signal
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from config import Config
 from scrapers.base import JobRecord
@@ -37,6 +38,36 @@ def _run_scraper(scraper_class, config, sources_filter):
         return []
 
 
+def _filter_since(jobs: list, since_days: int) -> list:
+    """Keep only jobs posted within the last since_days days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+    kept = []
+    skipped = 0
+    for job in jobs:
+        if not job.posted_at:
+            kept.append(job)   # keep jobs with no date (unknown)
+            continue
+        try:
+            # Normalise various date formats to a comparable datetime
+            raw = job.posted_at.strip()
+            # ISO format or date-only
+            raw_clean = re.sub(r"Z$", "+00:00", raw)
+            if "T" in raw_clean:
+                dt = datetime.fromisoformat(raw_clean)
+            else:
+                dt = datetime.fromisoformat(raw_clean + "T00:00:00+00:00")
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt >= cutoff:
+                kept.append(job)
+            else:
+                skipped += 1
+        except Exception:
+            kept.append(job)   # unparseable date → keep it
+    logger.info(f"--since {since_days}d filter: kept {len(kept)}, skipped {skipped}")
+    return kept
+
+
 def _clean_job(job: JobRecord, config: Config) -> JobRecord:
     """Apply cleaning passes to a single job record."""
     if job.location and (not job.location_city or not job.location_postcode):
@@ -62,6 +93,9 @@ def run_pipeline(
 ) -> dict:
     global _partial_jobs, _partial_contacts, _interrupted
     _interrupted = False
+
+    from enrichers.ai_enricher import reset_counter as _reset_ai
+    _reset_ai()
 
     signal.signal(signal.SIGINT, _handle_interrupt)
 
@@ -122,6 +156,10 @@ def run_pipeline(
         before_resume = len(unique_jobs)
         unique_jobs = [j for j in unique_jobs if j._hash not in seen]
         logger.info(f"Resume: skipped {before_resume - len(unique_jobs)} already-seen jobs")
+
+    # Stage 2c: --since filter
+    if since_days:
+        unique_jobs = _filter_since(unique_jobs, since_days)
 
     # Stage 3: Cleaning
     logger.info("Stage 3: Cleaning job records...")

@@ -1,6 +1,9 @@
 import random
+import logging
 
-USER_AGENTS = [
+logger = logging.getLogger(__name__)
+
+_FALLBACK_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -13,9 +16,29 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OPR/110.0.0.0",
 ]
 
+_fake_ua = None
+
+
+def _get_fake_ua():
+    global _fake_ua
+    if _fake_ua is None:
+        try:
+            from fake_useragent import UserAgent
+            _fake_ua = UserAgent(fallback=random.choice(_FALLBACK_USER_AGENTS))
+        except Exception:
+            logger.debug("fake-useragent unavailable, using built-in pool")
+            _fake_ua = False   # sentinel: don't retry
+    return _fake_ua
+
 
 def get_random_user_agent() -> str:
-    return random.choice(USER_AGENTS)
+    ua = _get_fake_ua()
+    if ua:
+        try:
+            return ua.random
+        except Exception:
+            pass
+    return random.choice(_FALLBACK_USER_AGENTS)
 
 
 def get_headers() -> dict:

@@ -159,7 +159,7 @@ class NHSScraper(BaseScraper):
             scraped_at=scraped_at,
         )
 
-        # Fetch full description (best effort)
+        # Fetch full description and requirements (best effort)
         try:
             detail = self._fetch_detail(job_id)
             if detail:
@@ -167,6 +167,18 @@ class NHSScraper(BaseScraper):
                 employer_url_detail = detail.get("employerUrl", None)
                 if employer_url_detail and not record.company_url:
                     record.company_url = employer_url_detail
+                # Extract requirements list
+                reqs = detail.get("requirements", detail.get("essentialCriteria", []))
+                if isinstance(reqs, list):
+                    record.requirements = [str(r) for r in reqs if r]
+                elif isinstance(reqs, str) and reqs:
+                    record.requirements = [line.strip() for line in reqs.splitlines() if line.strip()]
+                # Extract benefits list
+                bens = detail.get("benefits", detail.get("employeeBenefits", []))
+                if isinstance(bens, list):
+                    record.benefits = [str(b) for b in bens if b]
+                elif isinstance(bens, str) and bens:
+                    record.benefits = [line.strip() for line in bens.splitlines() if line.strip()]
         except Exception as e:
             logger.debug(f"Could not fetch NHS detail for {job_id}: {e}")
 

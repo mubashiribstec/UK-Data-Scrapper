@@ -32,7 +32,7 @@ def export_csv(jobs: list, contacts: dict, output_dir: str) -> str:
         writer.writeheader()
         for job in jobs:
             row = job.to_dict()
-            row["sources"] = "|".join(getattr(job, "_sources", [job.source]))
+            row["sources"] = "|".join(job.sources or [job.source])
             writer.writerow(row)
 
     # Contacts CSV
@@ -44,7 +44,7 @@ def export_csv(jobs: list, contacts: dict, output_dir: str) -> str:
             row["phone_numbers"] = "|".join(row.get("phone_numbers", []))
             row["emails"] = "|".join(row.get("emails", []))
             row["enrichment_sources"] = "|".join(row.get("enrichment_sources", []))
-            row["confidence_score"] = row.pop("contact_confidence", 0)
+            # confidence_score is already the correct key from to_dict()
             writer.writerow(row)
 
     logger.info(f"CSV export: {len(jobs)} jobs → {jobs_path}, {len(contacts)} contacts → {contacts_path}")
