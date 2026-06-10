@@ -35,10 +35,10 @@ COMMON RECIPES
   # Quick smoke test (no saving):
   python main.py --sources nhs --max-results 5 --no-enrich --dry-run
 
-  # One-time Indeed login (saved and reused by all later runs):
-  python main.py --login-indeed
+  # One-time ChatGPT/Gemini browser login (saved and reused by all later runs):
+  python main.py --login-ai
 
-  # Enable the AI pipeline (Gemini → Ollama failover, set keys in .env):
+  # Enable the AI pipeline (ChatGPT/Gemini browser first, API failover):
   python main.py --ai
 
   # Resume last run — skip already-seen jobs:
@@ -49,7 +49,7 @@ SOURCES
   nhs        NHS Jobs official API
   reed       Reed official API if REED_API_KEY is set (free key from
              reed.co.uk/developers), HTML scraping otherwise
-  indeed     Indeed UK via browser; run --login-indeed once for best results
+  indeed     Indeed UK via browser (no login needed)
   totaljobs  TotalJobs via browser
   cvlibrary  CV-Library via browser
 
@@ -88,13 +88,15 @@ OUTPUT
         help="Enable AI fallback for companies with no contact data found",
     )
     parser.add_argument(
-        "--ai-provider", choices=["gemini", "ollama", "anthropic"], default=None,
-        help="Force one AI provider (default: automatic chain gemini → ollama → anthropic)",
+        "--ai-provider", choices=["chatgpt", "gemini-web", "gemini", "ollama", "anthropic"],
+        default=None,
+        help="Force one AI provider (default: automatic chain "
+             "chatgpt → gemini-web → gemini → ollama → anthropic)",
     )
     parser.add_argument(
-        "--login-indeed", action="store_true",
-        help="One-time interactive Indeed login — opens a browser, you complete "
-             "email+OTP, the session is saved and reused by all future runs",
+        "--login-ai", action="store_true",
+        help="One-time interactive ChatGPT/Gemini browser login — opens a browser, "
+             "you sign in, the session is saved and reused by all future --ai runs",
     )
     parser.add_argument(
         "--proxies", metavar="PATH", default=None,
@@ -157,7 +159,7 @@ def main():
     if args.ai:
         config.ai_fallback_enabled = True
     if args.ai_provider:
-        config.ai_provider = args.ai_provider
+        config.ai_provider = args.ai_provider.replace("-", "_")
     if args.format:
         config.export_formats = args.format
     if args.output_dir:
@@ -170,9 +172,9 @@ def main():
 
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 
-    if args.login_indeed:
-        from scrapers.indeed import run_indeed_login
-        ok = run_indeed_login(config)
+    if args.login_ai:
+        from utils.browser_ai import run_ai_login
+        ok = run_ai_login(config)
         sys.exit(0 if ok else 1)
 
     logger.info("UK Nurse Jobs Scraper starting")

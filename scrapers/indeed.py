@@ -4,7 +4,6 @@ import random
 import logging
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from scrapers.base import JobRecord
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 INDEED_BASE = "https://uk.indeed.com/jobs"
 INDEED_JOB_URL = "https://uk.indeed.com/viewjob?jk={job_id}"
-INDEED_LOGIN_URL = "https://secure.indeed.com/auth?hl=en_GB"
 
 MOSAIC_RE = re.compile(
     r'window\.mosaic\.providerData\["mosaic-provider-jobcards"\]\s*=\s*(\{.+?\});',
@@ -22,62 +20,11 @@ MOSAIC_RE = re.compile(
 )
 
 
-def _profile_ready(profile_dir: str) -> bool:
-    """A persistent Indeed profile exists from a previous --login-indeed run."""
-    p = Path(profile_dir)
-    return p.is_dir() and any(p.iterdir())
-
-
-def run_indeed_login(config) -> bool:
-    """One-time interactive Indeed login.
-
-    Opens a HEADFUL browser on a persistent profile; the user completes the
-    login (email + OTP) manually. Cookies persist to disk and every later
-    headless run reuses them automatically.
-    """
-    scraper = IndeedScraper(config)
-    profile_dir = getattr(config, "indeed_profile_dir", "./output/.browser/indeed")
-
-    # Force headful for the login regardless of config
-    original_headless = config.playwright_headless
-    config.playwright_headless = False
-    try:
-        scraper._init_playwright(user_data_dir=profile_dir)
-        page = scraper._context.new_page()
-        page.goto(INDEED_LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
-
-        print("\n" + "=" * 64)
-        print("INDEED LOGIN")
-        print("=" * 64)
-        print("A browser window has opened on the Indeed sign-in page.")
-        print("1. Enter your email and continue")
-        print("2. When Indeed emails you a one-time code (OTP), enter it")
-        print("3. Wait until you are fully logged in (you see your account)")
-        print("=" * 64)
-        input("When you are logged in, press Enter here to save the session... ")
-
-        page.close()
-        logger.info(f"Indeed: login session saved to {profile_dir}")
-        print(f"\nSession saved. Future runs will use it automatically (headless).\n")
-        return True
-    except Exception as e:
-        logger.error(f"Indeed login failed: {e}")
-        return False
-    finally:
-        config.playwright_headless = original_headless
-        scraper._close_playwright()
-
-
 class IndeedScraper(PlaywrightScraper):
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
-        profile_dir = getattr(self.config, "indeed_profile_dir", "")
-        use_profile = profile_dir and _profile_ready(profile_dir)
-
         try:
-            self._init_playwright(user_data_dir=profile_dir if use_profile else None)
-            if use_profile:
-                logger.info("Indeed: using saved login session")
+            self._init_playwright()
         except Exception as e:
             logger.warning(f"Indeed: Playwright unavailable, skipping. Error: {e}")
             return []
@@ -95,17 +42,13 @@ class IndeedScraper(PlaywrightScraper):
 
             while len(results) < self.config.max_results_per_keyword:
                 if jobs_in_context >= 25:
-                    # Appear as a new visitor. With a persistent (logged-in)
-                    # profile we only recycle the page — recycling the context
-                    # would drop the session.
+                    # Recycle the context to appear as a new visitor
                     try:
                         page.close()
-                        if not self._persistent:
-                            ctx.close()
+                        ctx.close()
                     except Exception:
                         pass
-                    if not self._persistent:
-                        ctx = self._new_context()
+                    ctx = self._new_context()
                     page = ctx.new_page()
                     self._setup_page(page)
                     jobs_in_context = 0
@@ -161,7 +104,7 @@ class IndeedScraper(PlaywrightScraper):
             try:
                 if page:
                     page.close()
-                if ctx and not self._persistent:
+                if ctx:
                     ctx.close()
             except Exception:
                 pass

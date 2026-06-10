@@ -75,11 +75,23 @@ def _prompt_sources() -> list:
     return result
 
 
-def _prompt_ai() -> bool:
-    print("\nUse AI (Gemini -> Ollama -> Anthropic) to fill in missing fields")
+def _prompt_ai(config) -> bool:
+    print("\nUse AI (ChatGPT/Gemini in browser, API failover) to fill in missing fields")
     print("(requirements, benefits, phone, email) when a source doesn't provide them?")
     raw = input("Enable AI fallback? [y/N] > ").strip().lower()
-    return raw in ("y", "yes")
+    if raw not in ("y", "yes"):
+        return False
+
+    from utils.browser_ai import browser_ai_ready, profile_dir_for, run_ai_login
+    have_session = (browser_ai_ready(profile_dir_for("chatgpt", config))
+                    or browser_ai_ready(profile_dir_for("gemini_web", config)))
+    if not have_session:
+        print("\nNo saved ChatGPT/Gemini browser login found.")
+        print("With a one-time login, AI runs through the chat websites (free, no API key needed).")
+        raw = input("Log in now? A browser window will open. [Y/n] > ").strip().lower()
+        if raw not in ("n", "no"):
+            run_ai_login(config)
+    return True
 
 
 def main():
@@ -92,7 +104,7 @@ def main():
     config.keywords = _prompt_keywords(config.keywords)
     sources = _prompt_sources()
 
-    if _prompt_ai():
+    if _prompt_ai(config):
         config.ai_fallback_enabled = True
         print("AI fallback enabled.")
     else:

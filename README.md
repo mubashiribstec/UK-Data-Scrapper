@@ -14,8 +14,9 @@ playwright install chromium   # needed for Indeed / TotalJobs / CV-Library
 # 2. Copy env template and add your keys (all optional)
 cp .env.example .env
 
-# 3. (Recommended, once) log in to Indeed — session is saved and reused
-python main.py --login-indeed
+# 3. (Optional, once) log in to ChatGPT/Gemini in a browser — the session
+#    is saved and reused by every later --ai run, no API key needed
+python main.py --login-ai
 
 # 4. Run
 python main.py
@@ -45,10 +46,11 @@ It then runs the full pipeline and points you at the [data provenance report](#d
 
 ## Recommended one-time setup
 
-Two free keys make the scraper dramatically more reliable:
+Three free things make the scraper dramatically more reliable:
 
 1. **Reed API key** (free) — register at [reed.co.uk/developers](https://www.reed.co.uk/developers), put the key in `.env` as `REED_API_KEY=...`. The scraper then uses Reed's official JSON API (no bot detection, full data). Without it, HTML scraping is used as fallback.
-2. **Gemini API key** (free tier) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...`. Powers AI description parsing and contact lookup, with automatic failover to your Ollama server.
+2. **ChatGPT/Gemini browser login** (free) — run `python main.py --login-ai` once. The AI pipeline then drives the chat websites with your saved session — no API key needed.
+3. **Gemini API key** (free tier, failover) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...`. Used automatically when the browser providers are unavailable, with further failover to your Ollama server.
 
 ---
 
@@ -58,7 +60,7 @@ Two free keys make the scraper dramatically more reliable:
 |---|---|
 | Interactive setup (choose keywords/sources/AI) | `python interactive.py` |
 | Full run, all sources | `python main.py` |
-| One-time Indeed login (do this first) | `python main.py --login-indeed` |
+| One-time ChatGPT/Gemini browser login | `python main.py --login-ai` |
 | Fast test (NHS only, 10 jobs, no contact lookup) | `python main.py --sources nhs --max-results 10 --no-enrich` |
 | London nurses only | `python main.py --location London` |
 | Specific job titles | `python main.py --keywords "registered nurse" "RMN" "RNLD"` |
@@ -78,35 +80,45 @@ Two free keys make the scraper dramatically more reliable:
 |---|---|---|
 | `nhs` | Official REST API | No key needed |
 | `reed` | **Official API** when `REED_API_KEY` is set, HTML fallback otherwise | Free key strongly recommended |
-| `indeed` | Browser (Playwright), structured **mosaic JSON** extraction with CSS fallback | Run `--login-indeed` once for a logged-in session |
+| `indeed` | Browser (Playwright), structured **mosaic JSON** extraction with CSS fallback | No login needed |
 | `totaljobs` | Browser (Playwright), JSON-LD extraction with CSS fallback | StepStone bot detection — may be partially blocked |
 | `cvlibrary` | Browser (Playwright), JSON-LD extraction with CSS fallback | Cloudflare-protected — may be partially blocked |
 
 Select sources with `--sources nhs reed indeed totaljobs cvlibrary` (default: all five).
 
-### Indeed login (recommended)
-
-```bash
-python main.py --login-indeed
-```
-
-A browser window opens on the Indeed sign-in page. Enter your email, then the one-time code (OTP) Indeed emails you. When you're logged in, press Enter in the terminal. The session is saved to `output/.browser/indeed/` and **every later run reuses it automatically (headless)** — logged-in sessions get blocked far less often. Repeat only if Indeed logs you out.
-
 ---
 
 ## AI Pipeline (`--ai`)
 
-Providers are tried in a chain with automatic failover: **Gemini → Ollama → Anthropic**. Configure in `.env`:
+Providers are tried in a chain with automatic failover:
 
-```env
-GEMINI_API_KEY=your_key            # primary (free tier)
-GEMINI_MODEL=gemini-2.0-flash
-OLLAMA_BASE_URL=http://103.207.85.46:11434   # failover
-AI_MODEL=llama3.2
-ANTHROPIC_API_KEY=                 # optional, last in chain
+**ChatGPT (browser) → Gemini (browser) → Gemini API → Ollama → Anthropic**
+
+### Browser AI — one-time login, no API key needed
+
+```bash
+python main.py --login-ai
 ```
 
-A provider that fails twice in a row (quota, network) is skipped for the rest of the run. Force a single provider with `--ai-provider gemini|ollama|anthropic`.
+A visible browser opens ChatGPT, then Gemini — sign in to each (you can skip either one). Sessions are saved to `output/.browser/chatgpt/` and `output/.browser/gemini/` and **every later `--ai` run drives the chat websites headless using the saved login**. Repeat only if a site logs you out (the scraper will tell you: `session expired — run: python main.py --login-ai`).
+
+Notes on browser AI:
+- Prompts are answered through the normal chat web UI, so it's free but slower than an API (each answer takes ~15–60 s; calls run one at a time through a single browser)
+- Chat sites change their page layout from time to time and may challenge automated headless browsers — when that happens the call fails and the chain falls over to the API providers below automatically
+
+### API failover providers
+
+Configure in `.env` (all optional):
+
+```env
+GEMINI_API_KEY=your_key            # free tier
+GEMINI_MODEL=gemini-flash-latest
+OLLAMA_BASE_URL=http://103.207.85.46:11434
+AI_MODEL=llama3.2
+ANTHROPIC_API_KEY=                 # paid, last in chain
+```
+
+A provider that fails twice in a row (quota, network, layout change) is skipped for the rest of the run. Force a single provider with `--ai-provider chatgpt|gemini-web|gemini|ollama|anthropic`.
 
 With `--ai` enabled the AI does three jobs:
 1. **Description parsing** — extracts `requirements` and `benefits` lists from job ads that don't provide them (budget: `AI_PARSE_LIMIT`, default 30/run)
@@ -137,10 +149,10 @@ Output:
 Enrichment & AI:
   --no-enrich                 Skip contact lookup (phone/email) — faster
   --ai                        Enable the AI pipeline (description parsing + contact fallback)
-  --ai-provider PROVIDER      Force: gemini | ollama | anthropic (default: auto chain)
+  --ai-provider PROVIDER      Force: chatgpt | gemini-web | gemini | ollama | anthropic
 
 Sessions & network:
-  --login-indeed              One-time interactive Indeed login (saved + reused)
+  --login-ai                  One-time ChatGPT/Gemini browser login (saved + reused)
   --proxies PATH              Proxy list file for requests-based scrapers (NHS, Reed)
 
 Other:
@@ -361,6 +373,7 @@ Log files are written to `output/logs/scraper_YYYY-MM-DD.log`.
 ```
 UK-Data-Scrapper/
 ├── main.py            ← run this
+├── interactive.py     ← guided setup wizard
 ├── pipeline.py        ← orchestrates all stages
 ├── config.py          ← all settings
 ├── scheduler.py       ← cron wrapper
@@ -370,7 +383,7 @@ UK-Data-Scrapper/
 ├── scrapers/
 │   ├── nhs.py             ← NHS Jobs REST API
 │   ├── reed.py            ← Reed official API + HTML fallback
-│   ├── indeed.py          ← Indeed UK (Playwright, mosaic JSON, saved login)
+│   ├── indeed.py          ← Indeed UK (Playwright, mosaic JSON)
 │   ├── totaljobs.py       ← TotalJobs (Playwright, JSON-LD)
 │   ├── cvlibrary.py       ← CV-Library (Playwright, JSON-LD)
 │   ├── playwright_base.py ← shared browser boilerplate + anti-detection
@@ -399,7 +412,8 @@ UK-Data-Scrapper/
 │   └── sqlite_export.py  ← persistent store
 │
 ├── utils/
-│   ├── ai_client.py   ← Gemini → Ollama → Anthropic failover chain
+│   ├── ai_client.py   ← AI failover chain (browser + API providers)
+│   ├── browser_ai.py  ← ChatGPT/Gemini web UI automation + --login-ai
 │   ├── retry.py       ← exponential backoff
 │   ├── proxy.py       ← optional proxy rotation
 │   └── ...
@@ -421,7 +435,7 @@ playwright install chromium
 This is a known Windows issue — automatically fixed in the scraper code. If you still see it, make sure you have the latest code and Python 3.10+.
 
 **Indeed blocked / CAPTCHA**
-Run `python main.py --login-indeed` once — logged-in sessions are blocked far less. If a CAPTCHA still appears, run with `--headful`, solve it manually, and the session cookie keeps working afterwards.
+Run with `--headful`, solve the CAPTCHA manually, and retry. Indeed blocks come and go — waiting a few minutes between runs and lowering `--max-results` also helps.
 
 **Reed returns 403 / 0 jobs**
 Get a free API key from [reed.co.uk/developers](https://www.reed.co.uk/developers) and set `REED_API_KEY` in `.env` — the official API has no bot detection. Without a key the HTML fallback warms up the session and retries, but can still be blocked.
@@ -435,7 +449,8 @@ Both sites use aggressive bot protection (StepStone / Cloudflare). Try `--headfu
 - Use `--verbose` to see the response preview the scraper logs
 
 **AI: "all providers in the chain failed"**
-- Gemini: check `GEMINI_API_KEY` is valid and has quota left
+- ChatGPT/Gemini browser: run `python main.py --login-ai` again if a session expired; set `PLAYWRIGHT_HEADLESS=false` in `.env` to watch what the browser hits
+- Gemini API: check `GEMINI_API_KEY` is valid and has quota left
 - Ollama: confirm the server is reachable (`curl http://103.207.85.46:11434/api/tags`) and the model is pulled (`ollama pull llama3.2`)
 - A provider that fails twice is skipped for the rest of the run — restart to retry it
 

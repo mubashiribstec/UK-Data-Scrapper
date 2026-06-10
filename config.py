@@ -39,7 +39,10 @@ class Config:
 
     # Source credentials / keys
     reed_api_key: str = ""              # free key from reed.co.uk/developers
-    indeed_profile_dir: str = "./output/.browser/indeed"
+
+    # Browser AI (ChatGPT / Gemini web UI) saved login sessions
+    chatgpt_profile_dir: str = "./output/.browser/chatgpt"
+    gemini_web_profile_dir: str = "./output/.browser/gemini"
 
     # Proxies (optional, requests-based scrapers only)
     proxies_file: str = ""

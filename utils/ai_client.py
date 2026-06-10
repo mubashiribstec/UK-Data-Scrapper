@@ -86,8 +86,18 @@ def _call_anthropic(prompt: str, model: str, timeout: int) -> Optional[str]:
 
 
 def _build_chain(config) -> list[str]:
-    """Provider order: forced provider first if set, then the rest by default priority."""
+    """Provider order: forced provider first if set, then the rest by default priority.
+
+    Browser providers (ChatGPT / Gemini web, saved login sessions) come first
+    when available; API providers act as automatic failover.
+    """
+    from utils.browser_ai import browser_ai_ready, profile_dir_for
+
     chain = []
+    if browser_ai_ready(profile_dir_for("chatgpt", config)):
+        chain.append("chatgpt")
+    if browser_ai_ready(profile_dir_for("gemini_web", config)):
+        chain.append("gemini_web")
     if getattr(config, "gemini_api_key", ""):
         chain.append("gemini")
     if getattr(config, "ollama_base_url", ""):
@@ -124,7 +134,11 @@ def ask_ai(prompt: str, config, timeout: int = 60) -> Optional[str]:
             if provider in _dead_providers:
                 continue
         try:
-            if provider == "gemini":
+            if provider in ("chatgpt", "gemini_web"):
+                from utils.browser_ai import ask_browser_ai
+                # Browser round-trips are slow: page load + streaming answer
+                result = ask_browser_ai(prompt, config, provider, timeout=max(timeout, 180))
+            elif provider == "gemini":
                 result = _call_gemini(prompt, config.gemini_model, config.gemini_api_key, timeout)
             elif provider == "ollama":
                 result = _call_ollama(prompt, getattr(config, "ai_model", "llama3.2"),
