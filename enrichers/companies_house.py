@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 CH_BASE = "https://api.company-information.service.gov.uk"
 DOMAIN = "api.company-information.service.gov.uk"
 
+_logged_no_key = False
+
 
 def _format_address(addr: dict) -> Optional[str]:
     if not addr or not isinstance(addr, dict):
@@ -34,14 +36,25 @@ def _fuzzy_match(name1: str, name2: str) -> float:
 
 def enrich_from_companies_house(
     company: str,
+    api_key: str = "",
     timeout: int = 10,
     min_similarity: float = 0.75,
 ) -> Optional[ContactRecord]:
+    global _logged_no_key
+    # The Companies House API requires HTTP Basic auth (key as username) —
+    # without a key every request would just 401.
+    if not api_key:
+        if not _logged_no_key:
+            logger.debug("Companies House: no API key configured (set COMPANIES_HOUSE_API_KEY), skipping enricher")
+            _logged_no_key = True
+        return None
+
     record = ContactRecord(company=company)
     record.enrichment_sources = ["companies_house"]
 
     session = requests.Session()
     session.headers.update({"User-Agent": "NurseJobsScraper/1.0"})
+    auth = (api_key, "")
 
     # Step 1: Search
     try:
@@ -50,6 +63,7 @@ def enrich_from_companies_house(
             f"{CH_BASE}/search/companies",
             params={"q": company, "items_per_page": 5},
             timeout=timeout,
+            auth=auth,
         )
         resp.raise_for_status()
         results = resp.json().get("items", [])
@@ -77,7 +91,7 @@ def enrich_from_companies_house(
     # Step 2: Company profile
     try:
         time.sleep(0.5)
-        resp = session.get(f"{CH_BASE}/company/{company_number}", timeout=timeout)
+        resp = session.get(f"{CH_BASE}/company/{company_number}", timeout=timeout, auth=auth)
         resp.raise_for_status()
         profile = resp.json()
         addr = profile.get("registered_office_address", {})
@@ -95,6 +109,7 @@ def enrich_from_companies_house(
             f"{CH_BASE}/company/{company_number}/officers",
             params={"items_per_page": 10},
             timeout=timeout,
+            auth=auth,
         )
         resp.raise_for_status()
         officers = resp.json().get("items", [])

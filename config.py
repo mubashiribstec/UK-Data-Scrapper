@@ -39,6 +39,7 @@ class Config:
 
     # Source credentials / keys
     reed_api_key: str = ""              # free key from reed.co.uk/developers
+    companies_house_api_key: str = ""   # free key from developer.company-information.service.gov.uk
 
     # Browser AI (ChatGPT / Gemini web UI) saved login sessions
     chatgpt_profile_dir: str = "./output/.browser/chatgpt"
@@ -88,6 +89,8 @@ class Config:
             self.ai_parse_limit = int(os.getenv("AI_PARSE_LIMIT"))
         if os.getenv("REED_API_KEY"):
             self.reed_api_key = os.getenv("REED_API_KEY")
+        if os.getenv("COMPANIES_HOUSE_API_KEY"):
+            self.companies_house_api_key = os.getenv("COMPANIES_HOUSE_API_KEY")
         if os.getenv("PROXIES_FILE"):
             self.proxies_file = os.getenv("PROXIES_FILE")
         if os.getenv("OUTPUT_DIR"):

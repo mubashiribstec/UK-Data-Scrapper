@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from utils.debug_snapshot import save_debug_snapshot
+
 logger = logging.getLogger(__name__)
 
 PROVIDERS = {
@@ -29,9 +31,13 @@ PROVIDERS = {
         "url": "https://chatgpt.com/",
         "composer": [
             "#prompt-textarea",
+            "div#prompt-textarea",
             "div[contenteditable='true'][id='prompt-textarea']",
+            "textarea#prompt-textarea",
             "textarea[data-testid='prompt-textarea']",
             "div.ProseMirror[contenteditable='true']",
+            "form[data-type='unified-composer'] div[contenteditable='true']",
+            "main div[contenteditable='true']",
         ],
         "send": [
             "button[data-testid='send-button']",
@@ -56,6 +62,8 @@ PROVIDERS = {
             "rich-textarea div.ql-editor",
             "div.ql-editor[contenteditable='true']",
             "div[contenteditable='true'][role='textbox']",
+            "div.ql-editor[role='textbox']",
+            "main div[contenteditable='true']",
         ],
         "send": [
             "button[aria-label='Send message']",
@@ -76,6 +84,20 @@ PROVIDERS = {
         ],
     },
 }
+
+# Best-effort selectors for cookie-consent / "stay logged out" interstitials
+# that can cover the composer on a fresh session. Each is tried in order;
+# failures are swallowed since most won't match on any given page.
+_DISMISS_SELECTORS = [
+    "button:has-text('Accept all')",
+    "button:has-text('Accept All')",
+    "button:has-text('Accept')",
+    "button:has-text('I agree')",
+    "button:has-text('Stay logged out')",
+    "button:has-text('Reject all')",
+    "[aria-label='Close']",
+    "button[aria-label='Dismiss']",
+]
 
 # How long the answer text must stay unchanged before we treat it as complete
 _STABLE_SECONDS = 4.0
@@ -187,11 +209,14 @@ def _worker_loop():
         if item is _SHUTDOWN:
             break
         prompt, config, provider, timeout, done, box = item
+        page = None
         try:
             page = _get_page(provider, config)
             box["result"] = _ask_in_page(page, prompt, PROVIDERS[provider], timeout)
         except Exception as e:
             box["error"] = f"{provider}: {e}"
+            if page is not None:
+                save_debug_snapshot(page, f"browser_ai_{provider}_error")
             # Tear the session down so the next call starts from a clean browser
             _close_session(provider)
         finally:
@@ -224,15 +249,29 @@ def _first_visible(page, selectors, timeout_ms=0):
     return None
 
 
+def _dismiss_interstitials(page) -> None:
+    for sel in _DISMISS_SELECTORS:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click(timeout=2000)
+                time.sleep(0.3)
+        except Exception:
+            continue
+
+
 def _ask_in_page(page, prompt: str, spec: dict, timeout: int) -> str:
     # A fresh navigation per prompt = a fresh conversation, so answers can't
     # bleed into each other.
     page.goto(spec["url"], timeout=45000, wait_until="domcontentloaded")
+    time.sleep(1.0)
+    _dismiss_interstitials(page)
 
     composer = _first_visible(page, spec["composer"], timeout_ms=20000)
     if not composer:
         if _first_visible(page, spec["login_wall"]):
             raise RuntimeError("session expired — run: python main.py --login-ai")
+        save_debug_snapshot(page, "browser_ai_composer_not_found")
         raise RuntimeError("chat composer not found (page layout changed or blocked)")
 
     n_before = len(page.query_selector_all(spec["message"][0]))
@@ -284,6 +323,7 @@ def _wait_for_answer(page, spec: dict, n_before: int, timeout: int) -> str:
     if last_text:
         logger.warning("Browser AI: timeout while streaming — returning partial answer")
         return last_text
+    save_debug_snapshot(page, "browser_ai_no_answer")
     raise RuntimeError("no answer appeared before timeout")
 
 

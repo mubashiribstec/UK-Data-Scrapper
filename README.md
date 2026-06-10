@@ -46,11 +46,12 @@ It then runs the full pipeline and points you at the [data provenance report](#d
 
 ## Recommended one-time setup
 
-Three free things make the scraper dramatically more reliable:
+Four free things make the scraper dramatically more reliable:
 
 1. **Reed API key** (free) — register at [reed.co.uk/developers](https://www.reed.co.uk/developers), put the key in `.env` as `REED_API_KEY=...`. The scraper then uses Reed's official JSON API (no bot detection, full data). Without it, HTML scraping is used as fallback.
-2. **ChatGPT/Gemini browser login** (free) — run `python main.py --login-ai` once. The AI pipeline then drives the chat websites with your saved session — no API key needed.
-3. **Gemini API key** (free tier, failover) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...`. Used automatically when the browser providers are unavailable, with further failover to your Ollama server.
+2. **Companies House API key** (free) — register at [developer.company-information.service.gov.uk](https://developer.company-information.service.gov.uk/), set `COMPANIES_HOUSE_API_KEY=...`. Enables company address/director lookups during contact enrichment. Without it that enricher is skipped.
+3. **ChatGPT/Gemini browser login** (free) — run `python main.py --login-ai` once. The AI pipeline then drives the chat websites with your saved session — no API key needed.
+4. **Gemini API key** (free tier, failover) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...`. Used automatically when the browser providers are unavailable, with further failover to your Ollama server.
 
 ---
 
@@ -323,6 +324,7 @@ Copy `.env.example` to `.env` and edit as needed. All are optional.
 ```env
 # Sources
 REED_API_KEY=                        # free, reed.co.uk/developers
+COMPANIES_HOUSE_API_KEY=             # free, developer.company-information.service.gov.uk
 
 # AI chain (gemini → ollama → anthropic)
 GEMINI_API_KEY=
@@ -447,6 +449,20 @@ Both sites use aggressive bot protection (StepStone / Cloudflare). Try `--headfu
 - The NHS API blocks many datacenter/VPS IPs — run from a residential connection
 - Check [api.jobs.nhs.uk](https://api.jobs.nhs.uk) status
 - Use `--verbose` to see the response preview the scraper logs
+
+**NHS: "expected JSON but got text/html" with a garbled preview (starts with `\x1b`)**
+The NHS API (and some other sites) respond Brotli-compressed (`Content-Encoding: br`).
+Without the `brotli` package, `requests` cannot decompress them and you get raw
+compressed bytes instead of JSON. Fix: re-install dependencies to pick up `brotli`:
+```bash
+pip install -r requirements.txt
+```
+
+**Companies House enricher: 401 Unauthorized on every company**
+The Companies House API requires a free API key. Register at
+[developer.company-information.service.gov.uk](https://developer.company-information.service.gov.uk/)
+and set `COMPANIES_HOUSE_API_KEY=...` in `.env`. Without a key the enricher is
+skipped automatically (no failed requests).
 
 **AI: "all providers in the chain failed"**
 - ChatGPT/Gemini browser: run `python main.py --login-ai` again if a session expired; set `PLAYWRIGHT_HEADLESS=false` in `.env` to watch what the browser hits

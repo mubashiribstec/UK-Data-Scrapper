@@ -10,6 +10,7 @@ from scrapers.base import JobRecord
 from scrapers.playwright_base import PlaywrightScraper
 from scrapers.jsonld import find_jobpostings, parse_jobposting
 from utils.rate_limiter import RateLimiter
+from utils.debug_snapshot import save_debug_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +65,14 @@ class TotalJobsScraper(PlaywrightScraper):
 
                 if self._is_blocked(page):
                     logger.warning("TotalJobs: bot detection triggered. Saving partial results.")
+                    save_debug_snapshot(page, "totaljobs_blocked")
                     break
 
                 page_jobs = self._extract_jobs(page)
                 if not page_jobs:
                     logger.debug(f"TotalJobs: no jobs found on page {page_no}")
+                    if page_no == 1:
+                        save_debug_snapshot(page, "totaljobs_empty_page1")
                     break
 
                 for record in page_jobs:

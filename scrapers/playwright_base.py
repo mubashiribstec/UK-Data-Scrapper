@@ -119,6 +119,7 @@ class PlaywrightScraper(BaseScraper):
             user_agent=get_random_user_agent(),
             viewport={"width": width, "height": height},
             locale="en-GB",
+            timezone_id="Europe/London",
             extra_http_headers={"Accept-Language": "en-GB,en;q=0.9"},
         )
 

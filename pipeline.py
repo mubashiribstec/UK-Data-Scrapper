@@ -21,7 +21,8 @@ _interrupted = False
 
 def _handle_interrupt(sig, frame):
     global _interrupted
-    logger.warning("Interrupted! Saving partial results...")
+    if not _interrupted:
+        logger.warning("Interrupted! Saving partial results...")
     _interrupted = True
 
 

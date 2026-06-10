@@ -51,7 +51,11 @@ def _enrich_company(company: str, company_url: Optional[str], location: Optional
 
     # 2. Companies House
     try:
-        result = enrich_from_companies_house(company, timeout=timeout)
+        result = enrich_from_companies_house(
+            company,
+            api_key=getattr(config, "companies_house_api_key", ""),
+            timeout=timeout,
+        )
         if result:
             collected_records.append(result)
             merged = merge_contacts(collected_records, company)

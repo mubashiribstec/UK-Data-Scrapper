@@ -14,6 +14,8 @@ from typing import Optional
 
 import requests
 
+from utils.retry import retry
+
 logger = logging.getLogger(__name__)
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -28,6 +30,7 @@ _dead_providers: set[str] = set()
 _MAX_CONSECUTIVE_FAILURES = 2
 
 
+@retry(max_attempts=2, base_delay=1.5, max_delay=5.0)
 def _call_gemini(prompt: str, model: str, api_key: str, timeout: int) -> Optional[str]:
     resp = requests.post(
         GEMINI_URL.format(model=model),
@@ -61,12 +64,38 @@ def _call_gemini(prompt: str, model: str, api_key: str, timeout: int) -> Optiona
     return parts[0].get("text")
 
 
+def _list_ollama_models(base_url: str, timeout: int = 5) -> Optional[list]:
+    """Best-effort: list model names available on an Ollama server, for
+    diagnostics when a requested model returns 404. Returns None on error."""
+    try:
+        resp = requests.get(f"{base_url}/api/tags", timeout=timeout)
+        resp.raise_for_status()
+        models = resp.json().get("models", [])
+        return [m.get("name", "?") for m in models]
+    except Exception:
+        return None
+
+
+@retry(max_attempts=2, base_delay=1.5, max_delay=5.0)
 def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Optional[str]:
+    base = base_url.rstrip("/")
     resp = requests.post(
-        f"{base_url.rstrip('/')}/api/generate",
+        f"{base}/api/generate",
         json={"model": model, "prompt": prompt, "stream": False},
         timeout=timeout,
     )
+    if resp.status_code == 404:
+        # Almost always "model not pulled on this server". A RuntimeError
+        # (not a RequestException) skips the @retry — a missing model won't
+        # appear on retry — and names the models that ARE available.
+        available = _list_ollama_models(base, timeout=5)
+        if available is not None:
+            raise RuntimeError(
+                f"Ollama: model '{model}' not found on {base}. "
+                f"Available models: {available}. "
+                f"Set AI_MODEL env var to one of these."
+            )
+        raise RuntimeError(f"Ollama: model '{model}' not found on {base} (HTTP 404)")
     resp.raise_for_status()
     return resp.json().get("response", "")
 
