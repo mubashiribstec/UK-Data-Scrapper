@@ -34,7 +34,15 @@ def _call_gemini(prompt: str, model: str, api_key: str, timeout: int) -> Optiona
         headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 512, "temperature": 0},
+            "generationConfig": {
+                "maxOutputTokens": 512,
+                "temperature": 0,
+                # Newer Gemini models ("thinking" models, e.g. behind the
+                # gemini-flash-latest alias) spend part of maxOutputTokens on
+                # internal reasoning before the visible answer. Disable it so
+                # the full budget goes to the JSON response we asked for.
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
         },
         timeout=timeout,
     )
@@ -44,7 +52,13 @@ def _call_gemini(prompt: str, model: str, api_key: str, timeout: int) -> Optiona
         raise RuntimeError("Gemini API key invalid or unauthorised (HTTP 403)")
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise RuntimeError(f"Gemini returned no candidates (prompt blocked? {data.get('promptFeedback')})")
+    parts = candidates[0].get("content", {}).get("parts") or []
+    if not parts:
+        raise RuntimeError(f"Gemini returned empty content (finishReason={candidates[0].get('finishReason')})")
+    return parts[0].get("text")
 
 
 def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Optional[str]:

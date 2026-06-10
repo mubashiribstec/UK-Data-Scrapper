@@ -20,6 +20,7 @@ class ContactRecord:
     ai_used: bool = False
     enriched_at: Optional[str] = None
     confidence_score: int = 0
+    field_sources: dict = field(default_factory=dict)  # field name -> origin source(s)
 
     def to_dict(self) -> dict:
         return {
@@ -35,6 +36,7 @@ class ContactRecord:
             "ai_used": self.ai_used,
             "enriched_at": self.enriched_at,
             "confidence_score": self.confidence_score,
+            "field_sources": self.field_sources,
         }
 
 
@@ -45,23 +47,36 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
 
     merged = ContactRecord(company=company)
 
+    def src_of(r: ContactRecord) -> str:
+        return r.enrichment_sources[0] if r.enrichment_sources else "unknown"
+
     # Phone numbers: union of all valid, deduplicated
     seen_phones = set()
+    phone_sources = []
     for r in records:
         for p in r.phone_numbers:
             if p and p not in seen_phones:
                 seen_phones.add(p)
                 merged.phone_numbers.append(p)
+                if src_of(r) not in phone_sources:
+                    phone_sources.append(src_of(r))
+    if phone_sources:
+        merged.field_sources["phone_numbers"] = phone_sources
 
     # Emails: union, deduped, sorted with hr@ first
     seen_emails = set()
     all_emails = []
+    email_sources = []
     for r in records:
         for e in r.emails:
             if e and e.lower() not in seen_emails:
                 seen_emails.add(e.lower())
                 all_emails.append(e)
+                if src_of(r) not in email_sources:
+                    email_sources.append(src_of(r))
     merged.emails = sort_emails_by_priority(all_emails)
+    if email_sources:
+        merged.field_sources["emails"] = email_sources
 
     # Contact person: first non-null priority order (job ad itself > website > CH > AI)
     source_priority = ["job_description", "website", "companies_house", "charities", "cqc", "duckduckgo", "ai"]
@@ -69,12 +84,14 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
     for src in source_priority:
         if src in records_by_source and records_by_source[src].contact_person:
             merged.contact_person = records_by_source[src].contact_person
+            merged.field_sources["contact_person"] = src
             break
 
     # Address: prefer Companies House > CQC > website
     for src in ["companies_house", "cqc", "charities", "website", "job_description", "duckduckgo", "ai"]:
         if src in records_by_source and records_by_source[src].address:
             merged.address = records_by_source[src].address
+            merged.field_sources["address"] = src
             break
 
     # Website: prefer https, prefer known domains
@@ -82,19 +99,23 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
         if r.company_website:
             if not merged.company_website:
                 merged.company_website = r.company_website
+                merged.field_sources["company_website"] = src_of(r)
             elif r.company_website.startswith("https") and not merged.company_website.startswith("https"):
                 merged.company_website = r.company_website
+                merged.field_sources["company_website"] = src_of(r)
 
     # Company number from Companies House only
     for r in records:
         if r.company_number:
             merged.company_number = r.company_number
+            merged.field_sources["company_number"] = src_of(r)
             break
 
     # Company type
     for r in records:
         if r.company_type:
             merged.company_type = r.company_type
+            merged.field_sources["company_type"] = src_of(r)
             break
 
     # Enrichment sources

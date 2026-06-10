@@ -31,7 +31,7 @@ class Config:
     ai_provider: str = ""               # "" = automatic chain (gemini → ollama → anthropic)
     ai_model: str = "llama3.2"          # Ollama model name
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-flash-latest"
     ollama_base_url: str = "http://localhost:11434"
     anthropic_model: str = "claude-haiku-4-5-20251001"
     ai_call_limit: int = 20             # max AI contact-enrichment calls per run

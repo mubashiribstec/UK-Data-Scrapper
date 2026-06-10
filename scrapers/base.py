@@ -28,6 +28,7 @@ class JobRecord:
     expires_at: Optional[str] = None
     apply_url: Optional[str] = None
     sources: list = field(default_factory=list)   # populated by dedup: may list multiple origins
+    field_sources: dict = field(default_factory=dict)  # populated by dedup: field name -> origin source
     _hash: Optional[str] = None
     scraped_at: Optional[str] = None      # ISO timestamp
 
@@ -55,6 +56,7 @@ class JobRecord:
             "apply_url": self.apply_url,
             "_hash": self._hash,
             "scraped_at": self.scraped_at,
+            "field_sources": self.field_sources,
         }
 
 

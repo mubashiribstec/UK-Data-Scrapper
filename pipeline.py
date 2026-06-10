@@ -72,14 +72,24 @@ def _clean_job(job: JobRecord, config: Config) -> JobRecord:
     """Apply cleaning passes to a single job record."""
     if job.location and (not job.location_city or not job.location_postcode):
         city, postcode = parse_location(job.location)
-        job.location_city = job.location_city or city
-        job.location_postcode = job.location_postcode or postcode
+        if city and not job.location_city:
+            job.location_city = city
+            job.field_sources["location_city"] = "derived"
+        if postcode and not job.location_postcode:
+            job.location_postcode = postcode
+            job.field_sources["location_postcode"] = "derived"
 
     if job.salary_text and not job.salary_min:
         sal_min, sal_max, sal_period = parse_salary(job.salary_text)
-        job.salary_min = sal_min
-        job.salary_max = sal_max
-        job.salary_period = sal_period or job.salary_period
+        if sal_min is not None:
+            job.salary_min = sal_min
+            job.field_sources["salary_min"] = "derived"
+        if sal_max is not None:
+            job.salary_max = sal_max
+            job.field_sources["salary_max"] = "derived"
+        if sal_period and not job.salary_period:
+            job.salary_period = sal_period
+            job.field_sources["salary_period"] = "derived"
 
     return job
 
@@ -278,6 +288,12 @@ def _export_all(jobs, contacts, config, run_id, run_stats) -> list:
     if "sqlite" in formats:
         from exporters.sqlite_export import export_sqlite
         path = export_sqlite(jobs, contacts, config.sqlite_path, run_id, run_stats=run_stats)
+        if path:
+            out_files.append(path)
+
+    if run_stats.get("quality_report"):
+        from processing.quality import write_source_report
+        path = write_source_report(run_stats["quality_report"], config.output_dir)
         if path:
             out_files.append(path)
 

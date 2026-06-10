@@ -22,6 +22,7 @@ def _build_job_object(job, contacts: dict) -> dict:
             "confidence_score": contact_record.confidence_score,
             "ai_used": contact_record.ai_used,
             "enrichment_sources": contact_record.enrichment_sources,
+            "field_sources": contact_record.field_sources,
         }
     else:
         contact = None
@@ -47,6 +48,7 @@ def _build_job_object(job, contacts: dict) -> dict:
         "expires_at": job.expires_at,
         "apply_url": job.apply_url,
         "contact": contact,
+        "field_sources": job.field_sources,
         "_hash": job._hash,
         "scraped_at": job.scraped_at,
     }

@@ -25,6 +25,24 @@ Output lands in `./output/jobs_YYYY-MM-DD_HH-MM.json`.
 
 ---
 
+## Interactive Mode
+
+Don't want to remember CLI flags? Run the wizard:
+
+```bash
+python interactive.py
+```
+
+It asks three questions, each with a sensible default if you just press Enter:
+
+1. **Keywords** — comma-separated, or Enter to use the default 7 nursing job titles (`nurse, registered nurse, staff nurse, community nurse, RGN, RMN, RNLD`)
+2. **Sources** — pick by number or name (`1,3` or `nhs,reed`), or Enter for all five sources
+3. **AI fallback** — `y` to use the Gemini → Ollama → Anthropic chain to fill in missing requirements/benefits/phone/email; `N` (default) to use only free regex-based extraction
+
+It then runs the full pipeline and points you at the [data provenance report](#data-provenance--source-report).
+
+---
+
 ## Recommended one-time setup
 
 Two free keys make the scraper dramatically more reliable:
@@ -38,6 +56,7 @@ Two free keys make the scraper dramatically more reliable:
 
 | What you want | Command |
 |---|---|
+| Interactive setup (choose keywords/sources/AI) | `python interactive.py` |
 | Full run, all sources | `python main.py` |
 | One-time Indeed login (do this first) | `python main.py --login-indeed` |
 | Fast test (NHS only, 10 jobs, no contact lookup) | `python main.py --sources nhs --max-results 10 --no-enrich` |
@@ -150,6 +169,10 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
     "per_source_unique": {"nhs_jobs": 80, "reed": 40, "indeed": 22},
     "field_coverage": {"description": 0.72, "salary": 0.61, "phone": 0.31, "email": 0.22},
     "dedup": {"raw_total": 275, "unique": 142, "removed": 133},
+    "source_attribution": {
+      "job_fields": {"description": {"reed": 60, "indeed": 22}, "salary_min": {"reed": 30, "derived": 11}},
+      "contact_fields": {"phone_numbers": {"job_description": 20, "companies_house": 15}, "emails": {"website": 25}}
+    },
     "ai_calls": 12,
     "errors": 0
   },
@@ -190,7 +213,21 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
     "company_type": "charity",
     "confidence_score": 90,
     "ai_used": false,
-    "enrichment_sources": ["job_description", "website", "companies_house"]
+    "enrichment_sources": ["job_description", "website", "companies_house"],
+    "field_sources": {
+      "phone_numbers": ["job_description"],
+      "emails": ["website"],
+      "address": "companies_house",
+      "company_number": "companies_house"
+    }
+  },
+  "field_sources": {
+    "title": "reed",
+    "company": "reed",
+    "salary_text": "indeed",
+    "salary_min": "derived",
+    "description": "indeed",
+    "posted_at": "reed"
   },
   "_hash": "a3f9b2c1d4e5",
   "scraped_at": "2026-06-09T18:00:00Z"
@@ -206,10 +243,37 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
 | `salary_text` | Human-readable salary string |
 | `salary_min/max` | Parsed numeric values (same unit as `salary_period`) |
 | `salary_period` | `"annual"` or `"hourly"` |
+| `field_sources` | Per-field provenance: which scraper supplied each job field. `"derived"` means it was parsed from another field (e.g. `salary_min` parsed from `salary_text`); `"ai_description"` means AI extracted it from the job description |
 | `contact.confidence_score` | 0–100: how reliable the contact data is |
 | `contact.ai_used` | `true` if AI was used to find this contact |
 | `contact.enrichment_sources` | Which enrichers found data: `job_description`, `website`, `companies_house`, `cqc`, `charities`, `duckduckgo`, `ai` |
+| `contact.field_sources` | Per-field provenance: which enricher supplied each contact field |
 | `_hash` | Deduplication fingerprint (title + company + location) |
+
+---
+
+## Data Provenance / Source Report
+
+Every run writes a plain-text **source report** alongside the other output files:
+`output/source_report_YYYY-MM-DD_HH-MM.txt`. It answers "where did this piece of
+data come from?" — for example:
+
+```
+Job data — which source supplied each field (count of jobs):
+  title            reed: 80, indeed: 22, totaljobs: 18
+  salary_text      reed: 70, indeed: 30
+  salary_min       derived: 95, reed: 5
+  description      indeed: 60, reed: 40
+
+Contact data — which source supplied each field (count of companies):
+  phone_numbers    job_description: 20, companies_house: 15, website: 10
+  emails           website: 25, duckduckgo: 5
+  address          companies_house: 30
+```
+
+- `derived` = parsed/cleaned from another field (e.g. `salary_min` extracted from `salary_text`)
+- `ai_description` = filled in by the AI pipeline from the job description
+- The same breakdown is in every JSON export under `quality_report.source_attribution`, and per-record under each job's `field_sources` / `contact.field_sources`.
 
 ---
 
@@ -250,7 +314,7 @@ REED_API_KEY=                        # free, reed.co.uk/developers
 
 # AI chain (gemini → ollama → anthropic)
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODEL=gemini-flash-latest
 OLLAMA_BASE_URL=http://103.207.85.46:11434
 AI_MODEL=llama3.2
 ANTHROPIC_API_KEY=

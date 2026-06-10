@@ -11,6 +11,22 @@ _STOP_SUFFIXES = [
     "ltd", "limited", "plc", "llp", "llc",
 ]
 
+# Job fields tracked for source-provenance reporting
+_TRACKED_FIELDS = [
+    "title", "company", "company_url", "location", "location_city", "location_postcode",
+    "salary_text", "salary_min", "salary_max", "salary_period", "job_type",
+    "description", "requirements", "benefits", "posted_at", "expires_at", "apply_url",
+]
+
+
+def _init_field_sources(job: JobRecord) -> dict:
+    """Map each populated field on a freshly-scraped job to its origin source."""
+    return {
+        f: job.source
+        for f in _TRACKED_FIELDS
+        if getattr(job, f) not in (None, "", [])
+    }
+
 
 def _normalise(text: str) -> str:
     if not text:
@@ -60,10 +76,18 @@ def deduplicate(jobs: list[JobRecord]) -> list[JobRecord]:
             if job.source not in merged.sources:
                 merged.sources.append(job.source)
             seen_hashes[h] = merged
+            if merged is not existing:
+                # _merge_richer picked the new job as the richer record —
+                # swap it into `result` so the merge isn't silently dropped.
+                for idx, r in enumerate(result):
+                    if r is existing:
+                        result[idx] = merged
+                        break
             duplicate_count += 1
             continue
 
         job.sources = [job.source]
+        job.field_sources = _init_field_sources(job)
         seen_hashes[h] = job
         result.append(job)
 
@@ -86,18 +110,28 @@ def _merge_richer(a: JobRecord, b: JobRecord) -> JobRecord:
 
     primary, secondary = (a, b) if score(a) >= score(b) else (b, a)
 
+    if not primary.field_sources:
+        primary.field_sources = _init_field_sources(primary)
+    if not secondary.field_sources:
+        secondary.field_sources = _init_field_sources(secondary)
+
     for field_name in [
         "description", "salary_text", "salary_min", "salary_max", "salary_period",
         "job_type", "company_url", "location_city", "location_postcode",
         "posted_at", "expires_at", "apply_url"
     ]:
         if getattr(primary, field_name) is None:
-            setattr(primary, field_name, getattr(secondary, field_name))
+            value = getattr(secondary, field_name)
+            if value is not None:
+                setattr(primary, field_name, value)
+                primary.field_sources[field_name] = secondary.field_sources.get(field_name, secondary.source)
 
-    if not primary.requirements:
+    if not primary.requirements and secondary.requirements:
         primary.requirements = secondary.requirements
-    if not primary.benefits:
+        primary.field_sources["requirements"] = secondary.field_sources.get("requirements", secondary.source)
+    if not primary.benefits and secondary.benefits:
         primary.benefits = secondary.benefits
+        primary.field_sources["benefits"] = secondary.field_sources.get("benefits", secondary.source)
 
     return primary
 

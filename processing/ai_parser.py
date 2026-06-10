@@ -43,6 +43,10 @@ def _seed_contact(company: str, phones: list, emails: list) -> ContactRecord:
     record.emails = emails
     record.enrichment_sources = ["job_description"]
     record.enriched_at = datetime.utcnow().isoformat() + "Z"
+    if phones:
+        record.field_sources["phone_numbers"] = ["job_description"]
+    if emails:
+        record.field_sources["emails"] = ["job_description"]
     return record
 
 
@@ -110,15 +114,18 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
         reqs = data.get("requirements")
         if isinstance(reqs, list) and reqs and not job.requirements:
             job.requirements = [str(r) for r in reqs if r][:8]
+            job.field_sources["requirements"] = "ai_description"
 
         bens = data.get("benefits")
         if isinstance(bens, list) and bens and not job.benefits:
             job.benefits = [str(b) for b in bens if b][:8]
+            job.field_sources["benefits"] = "ai_description"
 
         # Company name normalisation: only fill a missing name, never overwrite
         norm_name = data.get("company_name")
         if norm_name and norm_name != "null" and not job.company:
             job.company = str(norm_name).strip()
+            job.field_sources["company"] = "ai_description"
 
         if job.company:
             phone = clean_phone(data.get("phone") or "")
@@ -136,6 +143,14 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
                     if existing:
                         existing.phone_numbers.extend(p for p in phones if p not in existing.phone_numbers)
                         existing.emails.extend(e for e in emails if e not in existing.emails)
+                        if phones:
+                            existing.field_sources.setdefault("phone_numbers", [])
+                            if "job_description" not in existing.field_sources["phone_numbers"]:
+                                existing.field_sources["phone_numbers"].append("job_description")
+                        if emails:
+                            existing.field_sources.setdefault("emails", [])
+                            if "job_description" not in existing.field_sources["emails"]:
+                                existing.field_sources["emails"].append("job_description")
                     else:
                         seeds[job.company] = _seed_contact(job.company, phones, emails)
 
