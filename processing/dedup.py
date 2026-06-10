@@ -54,13 +54,11 @@ def deduplicate(jobs: list[JobRecord]) -> list[JobRecord]:
     seen_source_ids: dict[str, set] = {}
     seen_hashes: dict[str, JobRecord] = {}
     result: list[JobRecord] = []
-    duplicate_count = 0
 
     for job in jobs:
         # Level 1: exact source ID dedup
         source_ids = seen_source_ids.setdefault(job.source, set())
         if job.job_id in source_ids:
-            duplicate_count += 1
             continue
         source_ids.add(job.job_id)
 
@@ -83,7 +81,6 @@ def deduplicate(jobs: list[JobRecord]) -> list[JobRecord]:
                     if r is existing:
                         result[idx] = merged
                         break
-            duplicate_count += 1
             continue
 
         job.sources = [job.source]
@@ -99,7 +96,7 @@ def deduplicate(jobs: list[JobRecord]) -> list[JobRecord]:
         if not job.sources:
             job.sources = [job.source]
 
-    logger.info(f"Dedup: {len(jobs)} → {len(result)} unique ({duplicate_count} removed)")
+    logger.info(f"Dedup: {len(jobs)} → {len(result)} unique ({len(jobs) - len(result)} removed)")
     return result
 
 

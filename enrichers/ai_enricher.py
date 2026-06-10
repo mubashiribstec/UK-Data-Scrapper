@@ -29,6 +29,8 @@ If you find details, respond ONLY with a JSON object in this exact format:
 If you are not confident (confidence = low), still output the JSON but set fields to null.
 Do not output anything other than the JSON object."""
 
+_logged_limit_reached = False
+
 
 def enrich_with_ai(
     company: str,
@@ -36,9 +38,15 @@ def enrich_with_ai(
     company_type: Optional[str] = None,
     config=None,
 ) -> Optional[ContactRecord]:
+    global _logged_limit_reached
     call_limit = getattr(config, "ai_call_limit", 20) if config else 20
     if get_call_count() >= call_limit:
-        logger.warning(f"AI enricher: call limit ({call_limit}) reached, skipping further AI calls")
+        if not _logged_limit_reached:
+            logger.warning(
+                f"AI enricher: call limit ({call_limit}) reached — "
+                "skipping AI lookups for all remaining companies"
+            )
+            _logged_limit_reached = True
         return None
 
     industry_hint = company_type or "healthcare/nursing provider"

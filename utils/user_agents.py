@@ -16,6 +16,28 @@ _FALLBACK_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OPR/110.0.0.0",
 ]
 
+def _detect_accept_encoding() -> str:
+    """Advertise `br` only when a brotli decoder is actually installed.
+
+    Servers (e.g. the NHS API) honour `Accept-Encoding: br` and respond
+    brotli-compressed; without the brotli package, requests cannot decompress
+    the body and callers see raw compressed bytes instead of JSON/HTML.
+    """
+    for mod in ("brotli", "brotlicffi"):
+        try:
+            __import__(mod)
+            return "gzip, deflate, br"
+        except ImportError:
+            continue
+    logger.warning(
+        "brotli package not installed — disabling 'br' encoding "
+        "(fix: pip install -r requirements.txt)"
+    )
+    return "gzip, deflate"
+
+
+ACCEPT_ENCODING = _detect_accept_encoding()
+
 _fake_ua = None
 
 
@@ -46,7 +68,7 @@ def get_headers() -> dict:
         "User-Agent": get_random_user_agent(),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-GB,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": ACCEPT_ENCODING,
         "DNT": "1",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",

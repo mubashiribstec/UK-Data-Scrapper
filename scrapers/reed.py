@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from scrapers.base import BaseScraper, JobRecord
 from scrapers.jsonld import strip_html as _strip_html, find_jobpostings, parse_jobposting
 from utils.rate_limiter import RateLimiter
-from utils.user_agents import get_headers
+from utils.user_agents import get_headers, ACCEPT_ENCODING
 from utils.retry import retry
 from utils.proxy import apply_proxy, rotate_proxy
 
@@ -28,7 +28,7 @@ def _reed_headers(referer: str = "https://www.reed.co.uk/") -> dict:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
                   "image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-GB,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": ACCEPT_ENCODING,
         "Referer": referer,
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
