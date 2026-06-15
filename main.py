@@ -125,6 +125,11 @@ OUTPUT
         help="Show the browser window when scraping Indeed (useful for debugging)",
     )
     parser.add_argument(
+        "--ai-headful", action="store_true",
+        help="Show the ChatGPT/Gemini AI browser window so you can solve a "
+             "'verify you are human' check (also auto-triggers when one is detected)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Run scrapers but don't save — prints a preview instead",
     )
@@ -167,6 +172,8 @@ def main():
         config.sqlite_path = str(Path(args.output_dir) / "scraper.db")
     if args.headful:
         config.playwright_headless = False
+    if args.ai_headful:
+        config.browser_ai_headful = True
     if args.proxies:
         config.proxies_file = args.proxies
 

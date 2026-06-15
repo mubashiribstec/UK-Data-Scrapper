@@ -102,6 +102,27 @@ _DISMISS_SELECTORS = [
 # How long the answer text must stay unchanged before we treat it as complete
 _STABLE_SECONDS = 4.0
 
+# A real desktop Chrome UA. Headless Chromium's DEFAULT UA contains
+# "HeadlessChrome", an instant bot signal that triggers Cloudflare's "verify
+# you are human" wall — so we always override it, headless or not.
+_REAL_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+_STEALTH_JS = (
+    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+    "Object.defineProperty(navigator, 'languages', {get: () => ['en-GB', 'en']});"
+    "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});"
+)
+
+
+class _HumanCheckHeadless(Exception):
+    """Raised when a 'verify you are human' wall blocks a headless browser-AI
+    page — signals the worker to retry the request in a visible window so the
+    user can solve it."""
+
+
 _request_q: queue.Queue = queue.Queue()
 _worker_lock = threading.Lock()
 _worker: Optional[threading.Thread] = None
@@ -133,7 +154,9 @@ def ask_browser_ai(prompt: str, config, provider: str, timeout: int = 180) -> Op
     done = threading.Event()
     box: dict = {}
     _request_q.put((prompt, config, provider, timeout, done, box))
-    if not done.wait(timeout + 60):
+    # Extra headroom so a one-off human-verification solve (visible window)
+    # doesn't trip the caller-side timeout mid-solve.
+    if not done.wait(timeout + 150):
         raise RuntimeError(f"{provider}: browser AI call timed out")
     if box.get("error"):
         raise RuntimeError(box["error"])
@@ -171,7 +194,8 @@ def _worker_loop():
         asyncio.set_event_loop(asyncio.new_event_loop())
 
     playwright = None
-    sessions: dict[str, tuple] = {}   # provider -> (context, page)
+    sessions: dict[str, tuple] = {}   # provider -> (context, page, headful)
+    escalated: set = set()            # providers forced visible after a human-check
 
     def _close_session(provider):
         ctx_page = sessions.pop(provider, None)
@@ -181,28 +205,38 @@ def _worker_loop():
             except Exception:
                 pass
 
-    def _get_page(provider, config):
+    def _launch(provider, config, headful):
         nonlocal playwright
-        if provider in sessions:
-            return sessions[provider][1]
         if playwright is None:
             from playwright.sync_api import sync_playwright
             playwright = sync_playwright().start()
         ctx = playwright.chromium.launch_persistent_context(
             profile_dir_for(provider, config),
-            headless=getattr(config, "playwright_headless", True),
+            headless=not headful,
             args=["--no-sandbox", "--disable-dev-shm-usage",
                   "--disable-blink-features=AutomationControlled"],
+            user_agent=_REAL_UA,
             viewport={"width": 1366, "height": 768},
             locale="en-GB",
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        page.add_init_script(_STEALTH_JS)
+        sessions[provider] = (ctx, page, headful)
+        logger.info(
+            f"Browser AI: {PROVIDERS[provider]['label']} session opened "
+            f"({'visible' if headful else 'headless'})"
         )
-        sessions[provider] = (ctx, page)
-        logger.info(f"Browser AI: {PROVIDERS[provider]['label']} session opened")
         return page
+
+    def _get_page(provider, config):
+        if provider in sessions:
+            return sessions[provider][1]
+        headful = (
+            not getattr(config, "playwright_headless", True)
+            or bool(getattr(config, "browser_ai_headful", False))
+            or provider in escalated
+        )
+        return _launch(provider, config, headful)
 
     while True:
         item = _request_q.get()
@@ -212,7 +246,27 @@ def _worker_loop():
         page = None
         try:
             page = _get_page(provider, config)
-            box["result"] = _ask_in_page(page, prompt, PROVIDERS[provider], timeout)
+            headful = sessions[provider][2]
+            box["result"] = _ask_in_page(page, prompt, PROVIDERS[provider], timeout, headful=headful)
+        except _HumanCheckHeadless:
+            # ChatGPT/Gemini is behind a "verify you are human" wall that can't
+            # be solved in an invisible browser. Reopen this provider VISIBLE so
+            # the user can solve it, remember that for the rest of the run, retry.
+            logger.warning(
+                f"Browser AI: {PROVIDERS[provider]['label']} needs human verification — "
+                "opening a VISIBLE browser window so you can solve it (don't close it)"
+            )
+            escalated.add(provider)
+            _close_session(provider)
+            page = None
+            try:
+                page = _launch(provider, config, headful=True)
+                box["result"] = _ask_in_page(page, prompt, PROVIDERS[provider], timeout, headful=True)
+            except Exception as e:
+                box["error"] = f"{provider}: {e}"
+                if page is not None:
+                    save_debug_snapshot(page, f"browser_ai_{provider}_error")
+                _close_session(provider)
         except Exception as e:
             box["error"] = f"{provider}: {e}"
             if page is not None:
@@ -260,17 +314,68 @@ def _dismiss_interstitials(page) -> None:
             continue
 
 
-def _ask_in_page(page, prompt: str, spec: dict, timeout: int) -> str:
+_HUMAN_CHECK_TITLE_MARKERS = (
+    "just a moment", "attention required", "verify", "robot", "are you human",
+)
+
+
+def _looks_like_human_check(page) -> bool:
+    """Detect a Cloudflare / 'verify you are human' interstitial on the page."""
+    try:
+        title = (page.title() or "").lower()
+        if any(m in title for m in _HUMAN_CHECK_TITLE_MARKERS):
+            return True
+    except Exception:
+        pass
+    for sel in (
+        "iframe[src*='challenges.cloudflare.com']",
+        "iframe[title*='Cloudflare']",
+        "#challenge-stage",
+        "#cf-challenge-running",
+        "[id*='turnstile']",
+        "input[name='cf-turnstile-response']",
+    ):
+        try:
+            if page.query_selector(sel):
+                return True
+        except Exception:
+            continue
+    try:
+        body = (page.inner_text("body") or "").lower()
+        if "verify you are human" in body or "checking your browser" in body:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _ask_in_page(page, prompt: str, spec: dict, timeout: int, headful: bool = False) -> str:
     # A fresh navigation per prompt = a fresh conversation, so answers can't
     # bleed into each other.
     page.goto(spec["url"], timeout=45000, wait_until="domcontentloaded")
     time.sleep(1.0)
     _dismiss_interstitials(page)
 
-    composer = _first_visible(page, spec["composer"], timeout_ms=20000)
+    # When visible, give the user time to clear any human-verification wall.
+    if headful and _looks_like_human_check(page):
+        logger.warning(
+            "Browser AI: a 'verify you are human' challenge is on screen — "
+            "please solve it in the browser window (waiting up to 90s)..."
+        )
+    composer_timeout = 90000 if headful else 20000
+
+    composer = _first_visible(page, spec["composer"], timeout_ms=composer_timeout)
     if not composer:
         if _first_visible(page, spec["login_wall"]):
             raise RuntimeError("session expired — run: python main.py --login-ai")
+        if _looks_like_human_check(page):
+            save_debug_snapshot(page, "browser_ai_human_check")
+            if not headful:
+                raise _HumanCheckHeadless()
+            raise RuntimeError(
+                "human-verification challenge not solved in time — re-run and "
+                "solve it in the visible window, or run: python main.py --login-ai"
+            )
         save_debug_snapshot(page, "browser_ai_composer_not_found")
         raise RuntimeError("chat composer not found (page layout changed or blocked)")
 
@@ -359,16 +464,20 @@ def run_ai_login(config) -> bool:
                 continue
 
             Path(profile_dir).mkdir(parents=True, exist_ok=True)
+            # Match the UA/stealth used by headless runs so the human-verification
+            # cookie (cf_clearance) saved here is still valid later.
             ctx = p.chromium.launch_persistent_context(
                 profile_dir,
                 headless=False,
                 args=["--no-sandbox", "--disable-dev-shm-usage",
                       "--disable-blink-features=AutomationControlled"],
+                user_agent=_REAL_UA,
                 viewport={"width": 1366, "height": 768},
                 locale="en-GB",
             )
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.add_init_script(_STEALTH_JS)
                 page.goto(spec["url"], timeout=60000, wait_until="domcontentloaded")
 
                 print("=" * 64)
@@ -376,7 +485,8 @@ def run_ai_login(config) -> bool:
                 print("=" * 64)
                 print(f"A browser window has opened on {spec['url']}")
                 print("1. Sign in with your account (complete any 2FA/OTP)")
-                print("2. Wait until you can see the normal chat screen")
+                print("2. Solve any 'verify you are human' check if shown")
+                print("3. Wait until you can see the normal chat screen")
                 print("=" * 64)
                 input(f"When you are logged in to {label}, press Enter here to save the session... ")
                 ok = True

@@ -106,6 +106,7 @@ A visible browser opens ChatGPT, then Gemini — sign in to each (you can skip e
 Notes on browser AI:
 - Prompts are answered through the normal chat web UI, so it's free but slower than an API (each answer takes ~15–60 s; calls run one at a time through a single browser)
 - Chat sites change their page layout from time to time and may challenge automated headless browsers — when that happens the call fails and the chain falls over to the API providers below automatically
+- **"Verify you are human" challenge:** if ChatGPT/Gemini shows a Cloudflare human-check, the scraper automatically re-opens that provider in a **visible** window so you can solve it — leave the window open, tick the box, and it continues (the cleared cookie is reused for the rest of the run). To always start visible, run with `--ai-headful` or set `BROWSER_AI_HEADFUL=true` in `.env`.
 
 ### API failover providers
 

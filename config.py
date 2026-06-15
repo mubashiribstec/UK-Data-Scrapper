@@ -44,6 +44,9 @@ class Config:
     # Browser AI (ChatGPT / Gemini web UI) saved login sessions
     chatgpt_profile_dir: str = "./output/.browser/chatgpt"
     gemini_web_profile_dir: str = "./output/.browser/gemini"
+    # Show the AI browser window (so you can solve a "verify you are human"
+    # check). Auto-enabled on demand when such a challenge blocks a headless run.
+    browser_ai_headful: bool = False
 
     # Proxies (optional, requests-based scrapers only)
     proxies_file: str = ""
@@ -99,5 +102,7 @@ class Config:
             self.sqlite_path = os.getenv("SQLITE_PATH")
         if os.getenv("PLAYWRIGHT_HEADLESS"):
             self.playwright_headless = os.getenv("PLAYWRIGHT_HEADLESS").lower() != "false"
+        if os.getenv("BROWSER_AI_HEADFUL"):
+            self.browser_ai_headful = os.getenv("BROWSER_AI_HEADFUL").lower() == "true"
         if os.getenv("ENRICH_CONTACTS"):
             self.enrich_contacts = os.getenv("ENRICH_CONTACTS").lower() == "true"
