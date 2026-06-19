@@ -17,14 +17,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from utils.logger import setup_logger
 
-ALL_SOURCES = ["nhs", "reed", "indeed", "totaljobs", "cvlibrary"]
+ALL_SOURCES = ["reed", "indeed"]
 
 SOURCE_LABELS = {
-    "nhs": "NHS Jobs (official API)",
-    "reed": "Reed.co.uk",
+    "reed": "Reed.co.uk (official API, requires REED_API_KEY)",
     "indeed": "Indeed UK",
-    "totaljobs": "TotalJobs",
-    "cvlibrary": "CV-Library",
 }
 
 
@@ -43,7 +40,7 @@ def _prompt_sources() -> list:
     print("\nWhich job sources should be scraped?")
     for i, src in enumerate(ALL_SOURCES, 1):
         print(f"  {i}. {src:<10} {SOURCE_LABELS[src]}")
-    print("Enter numbers or names, comma-separated (e.g. '1,3' or 'nhs,reed').")
+    print("Enter numbers or names, comma-separated (e.g. '1,2' or 'reed,indeed').")
     print("  Default: all sources")
     raw = input("> ").strip()
     if not raw:

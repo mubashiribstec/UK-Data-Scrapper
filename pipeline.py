@@ -124,17 +124,12 @@ def run_pipeline(
     logger.info(f"Max results per keyword: {config.max_results_per_keyword}")
 
     # Import scrapers
-    from scrapers.nhs import NHSScraper
     from scrapers.reed import ReedScraper
     from scrapers.indeed import IndeedScraper
-    from scrapers.totaljobs import TotalJobsScraper
-    from scrapers.cvlibrary import CVLibraryScraper
 
-    scraper_classes = [NHSScraper, ReedScraper, IndeedScraper, TotalJobsScraper, CVLibraryScraper]
+    scraper_classes = [ReedScraper, IndeedScraper]
 
     # Stage 1: Run scrapers in parallel
-    # max_workers=4: up to 3 Playwright browsers plus the requests scrapers is
-    # already heavy; don't run all 5 sources fully concurrently.
     logger.info("Stage 1: Running scrapers in parallel...")
     all_raw_jobs = []
     per_source_raw: dict[str, int] = {}
@@ -291,6 +286,14 @@ def _export_all(jobs, contacts, config, run_id, run_stats) -> list:
         path = export_sqlite(jobs, contacts, config.sqlite_path, run_id, run_stats=run_stats)
         if path:
             out_files.append(path)
+
+    if "mysql" in formats:
+        from exporters.mysql_export import export_mysql
+        try:
+            target = export_mysql(jobs, contacts, config, run_id, run_stats=run_stats)
+            out_files.append(f"mysql:{target}")
+        except Exception as e:
+            logger.error(f"MySQL export failed: {e}")
 
     if run_stats.get("quality_report"):
         from processing.quality import write_source_report

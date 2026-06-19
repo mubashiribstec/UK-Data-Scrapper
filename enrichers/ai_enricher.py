@@ -57,7 +57,7 @@ def enrich_with_ai(
     )
 
     logger.info(f"AI enricher: looking up '{company}' (call #{get_call_count() + 1})")
-    raw_response = ask_ai(prompt, config, timeout=60)
+    raw_response, provider = ask_ai(prompt, config, timeout=60)
     if not raw_response:
         return None
 
@@ -67,10 +67,10 @@ def enrich_with_ai(
         return None
 
     confidence = data.get("confidence", "low")
-    logger.info(f"AI enricher: confidence={confidence} for '{company}'")
+    logger.info(f"AI enricher: confidence={confidence} for '{company}' (provider={provider})")
 
     record = ContactRecord(company=company)
-    record.enrichment_sources = ["ai"]
+    record.enrichment_sources = [provider or "ai"]
     record.ai_used = True
 
     raw_phone = data.get("phone")

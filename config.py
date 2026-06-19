@@ -60,11 +60,15 @@ class Config:
     domain_delays: dict = field(default_factory=lambda: {
         "uk.indeed.com": 4.0,
         "www.reed.co.uk": 2.5,
-        "api.jobs.nhs.uk": 1.0,
-        "www.totaljobs.com": 3.0,
-        "www.cv-library.co.uk": 3.0,
         "api.company-information.service.gov.uk": 0.5
     })
+
+    # MySQL / MariaDB CRM export (optional)
+    mysql_host: str = ""
+    mysql_port: int = 3306
+    mysql_database: str = ""
+    mysql_user: str = ""
+    mysql_password: str = ""
 
     def __post_init__(self):
         # Load overrides from environment variables
@@ -106,3 +110,13 @@ class Config:
             self.browser_ai_headful = os.getenv("BROWSER_AI_HEADFUL").lower() == "true"
         if os.getenv("ENRICH_CONTACTS"):
             self.enrich_contacts = os.getenv("ENRICH_CONTACTS").lower() == "true"
+        if os.getenv("MYSQL_HOST"):
+            self.mysql_host = os.getenv("MYSQL_HOST")
+        if os.getenv("MYSQL_PORT"):
+            self.mysql_port = int(os.getenv("MYSQL_PORT"))
+        if os.getenv("MYSQL_DATABASE"):
+            self.mysql_database = os.getenv("MYSQL_DATABASE")
+        if os.getenv("MYSQL_USER"):
+            self.mysql_user = os.getenv("MYSQL_USER")
+        if os.getenv("MYSQL_PASSWORD"):
+            self.mysql_password = os.getenv("MYSQL_PASSWORD")

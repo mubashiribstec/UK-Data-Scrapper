@@ -142,11 +142,13 @@ def _build_chain(config) -> list[str]:
     return chain
 
 
-def ask_ai(prompt: str, config, timeout: int = 60) -> Optional[str]:
-    """Send a prompt down the provider chain, returning the first response.
+def ask_ai(prompt: str, config, timeout: int = 60) -> tuple[Optional[str], Optional[str]]:
+    """Send a prompt down the provider chain, returning (response, provider_name).
 
     Counts one AI call per invocation regardless of how many providers were
-    attempted. Returns None when every provider fails.
+    attempted. Returns (None, None) when every provider fails. The provider
+    name (e.g. "gemini", "ollama") lets callers tag which fields were filled
+    in by which AI service, instead of a generic "ai" label.
     """
     global _ai_call_counter
     with _lock:
@@ -156,7 +158,7 @@ def ask_ai(prompt: str, config, timeout: int = 60) -> Optional[str]:
     chain = _build_chain(config)
     if not chain:
         logger.warning("AI: no provider configured (set GEMINI_API_KEY, OLLAMA_BASE_URL or ANTHROPIC_API_KEY)")
-        return None
+        return None, None
 
     for provider in chain:
         with _lock:
@@ -183,7 +185,7 @@ def ask_ai(prompt: str, config, timeout: int = 60) -> Optional[str]:
                 with _lock:
                     _provider_failures[provider] = 0
                 logger.debug(f"AI call #{call_no}: {provider} responded")
-                return result
+                return result, provider
             raise RuntimeError("empty response")
 
         except Exception as e:
@@ -199,7 +201,7 @@ def ask_ai(prompt: str, config, timeout: int = 60) -> Optional[str]:
             )
 
     logger.error("AI: all providers in the chain failed")
-    return None
+    return None, None
 
 
 def parse_ai_json(text: str) -> Optional[dict]:

@@ -1,43 +1,18 @@
-import re
-import time
 import logging
 from datetime import datetime
 from typing import Optional
 import requests
-from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, JobRecord
-from scrapers.jsonld import strip_html as _strip_html, find_jobpostings, parse_jobposting
+from scrapers.jsonld import strip_html as _strip_html
 from utils.rate_limiter import RateLimiter
-from utils.user_agents import get_headers, ACCEPT_ENCODING
 from utils.retry import retry
-from utils.proxy import apply_proxy, rotate_proxy
+from utils.proxy import apply_proxy
 
 logger = logging.getLogger(__name__)
 
-REED_SEARCH_URL = "https://www.reed.co.uk/jobs/{keyword}-jobs"
 REED_API_SEARCH = "https://www.reed.co.uk/api/1.0/search"
 REED_API_DETAILS = "https://www.reed.co.uk/api/1.0/jobs/{job_id}"
-
-
-def _reed_headers(referer: str = "https://www.reed.co.uk/") -> dict:
-    """Headers that pass Reed's bot detection — must look like a real browser navigation."""
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                  "image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Accept-Encoding": ACCEPT_ENCODING,
-        "Referer": referer,
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0",
-    }
 
 
 def _ddmmyyyy_to_iso(raw: Optional[str]) -> Optional[str]:
@@ -56,28 +31,16 @@ class ReedScraper(BaseScraper):
         self.rate_limiter = RateLimiter(config.domain_delays)
         self.session = requests.Session()
         apply_proxy(self.session)
-        self._warmed_up = False
         self.api_key = getattr(config, "reed_api_key", "") or ""
-        self._api_disabled = False   # set when the key is rejected (401/403)
-
-    def _warmup(self):
-        """Visit Reed homepage first to get cookies — prevents 403 on search pages."""
-        try:
-            self.session.get(
-                "https://www.reed.co.uk/",
-                headers=_reed_headers(referer="https://www.google.com/"),
-                timeout=self.config.request_timeout,
-            )
-            self._warmed_up = True
-            logger.debug("Reed: session warmed up (homepage visited)")
-        except Exception as e:
-            logger.debug(f"Reed: warmup failed (continuing anyway): {e}")
-            self._warmed_up = True   # don't retry
 
     def scrape(self, keyword: str, location: str) -> list[JobRecord]:
-        if self.api_key and not self._api_disabled:
-            return self._scrape_api(keyword, location)
-        return self._scrape_html(keyword, location)
+        if not self.api_key:
+            logger.warning(
+                "Reed: no REED_API_KEY configured — skipping Reed entirely "
+                "(register a free key at reed.co.uk/developers)"
+            )
+            return []
+        return self._scrape_api(keyword, location)
 
     # ── Official Reed Jobseeker API (preferred) ──────────────────────────────
 
@@ -116,10 +79,9 @@ class ReedScraper(BaseScraper):
             if resp.status_code in (401, 403):
                 logger.error(
                     f"Reed API key rejected (HTTP {resp.status_code}) — check REED_API_KEY. "
-                    "Falling back to HTML scraping for the rest of this run."
+                    "Skipping Reed for the rest of this run."
                 )
-                self._api_disabled = True
-                return self._scrape_html(keyword, location)
+                return results
 
             if resp.status_code != 200:
                 logger.warning(f"Reed API returned HTTP {resp.status_code} for '{keyword}'")
@@ -227,132 +189,3 @@ class ReedScraper(BaseScraper):
 
         if detail.get("externalUrl") and not record.company_url:
             record.company_url = detail["externalUrl"]
-
-    # ── HTML scraping fallback (no API key) ──────────────────────────────────
-
-    def _scrape_html(self, keyword: str, location: str) -> list[JobRecord]:
-        if not self._warmed_up:
-            self._warmup()
-
-        results = []
-        page = 1
-        collected = 0
-        keyword_slug = keyword.lower().replace(" ", "-")
-
-        while collected < self.config.max_results_per_keyword:
-            self.rate_limiter.wait("www.reed.co.uk")
-            params = {"location": location, "pageno": page}
-            url = REED_SEARCH_URL.format(keyword=keyword_slug)
-
-            for attempt in range(self.config.max_retries):
-                try:
-                    resp = self.session.get(
-                        url,
-                        params=params,
-                        headers=_reed_headers(),
-                        timeout=self.config.request_timeout,
-                    )
-                    break
-                except Exception as e:
-                    logger.error(f"Reed request failed for '{keyword}' page {page}: {e}")
-                    resp = None
-            else:
-                break  # all retries exhausted
-
-            if resp is None:
-                break
-
-            if resp.status_code == 403:
-                if page == 1:
-                    # First page 403: re-warm and retry once
-                    logger.warning("Reed: 403 on first page — refreshing session and retrying")
-                    rotate_proxy(self.session)
-                    self._warmed_up = False
-                    self._warmup()
-                    time.sleep(3)
-                    try:
-                        resp = self.session.get(
-                            url, params=params,
-                            headers=_reed_headers(),
-                            timeout=self.config.request_timeout,
-                        )
-                    except Exception:
-                        break
-                    if resp.status_code != 200:
-                        logger.warning(f"Reed: still {resp.status_code} after session refresh — skipping")
-                        break
-                else:
-                    logger.warning(f"Reed: 403 on page {page}, stopping pagination")
-                    break
-
-            if resp.status_code == 429 or resp.status_code == 503:
-                retry_after = int(resp.headers.get("Retry-After", 15))
-                logger.warning(f"Reed rate limited ({resp.status_code}), waiting {retry_after}s")
-                time.sleep(retry_after)
-                continue
-
-            if resp.status_code != 200:
-                logger.warning(f"Reed returned HTTP {resp.status_code} for '{keyword}'")
-                break
-
-            soup = BeautifulSoup(resp.text, "lxml")
-            page_jobs = find_jobpostings(soup)
-
-            if not page_jobs:
-                # Fallback: try to parse job cards from HTML
-                page_jobs_fallback = self._parse_job_cards(soup)
-                if not page_jobs_fallback:
-                    logger.debug(f"Reed: no more jobs found on page {page} for '{keyword}'")
-                    break
-                for job_data in page_jobs_fallback:
-                    if collected >= self.config.max_results_per_keyword:
-                        break
-                    results.append(job_data)
-                    collected += 1
-            else:
-                for job_data in page_jobs:
-                    if collected >= self.config.max_results_per_keyword:
-                        break
-                    try:
-                        record = parse_jobposting(job_data, "reed")
-                        results.append(record)
-                        collected += 1
-                    except Exception as e:
-                        logger.warning(f"Reed JSON-LD parse error: {e}")
-
-            # Check if there's a next page
-            next_btn = soup.find("a", {"data-page": str(page + 1)}) or soup.find("a", string=re.compile(r"Next", re.I))
-            if not next_btn and len(page_jobs) == 0:
-                break
-            page += 1
-
-        logger.info(f"Reed: scraped {len(results)} jobs for '{keyword}'")
-        return results
-
-    def _parse_job_cards(self, soup: BeautifulSoup) -> list[JobRecord]:
-        """Fallback: parse job cards from HTML when JSON-LD is missing."""
-        records = []
-        cards = soup.find_all("article", attrs={"data-job-id": True})
-        for card in cards:
-            try:
-                job_id = card.get("data-job-id", "")
-                title_el = card.find("h2") or card.find(class_=re.compile(r"title", re.I))
-                title = title_el.get_text(strip=True) if title_el else "Unknown"
-                company_el = card.find(class_=re.compile(r"employer|company", re.I))
-                company = company_el.get_text(strip=True) if company_el else None
-                location_el = card.find(class_=re.compile(r"location", re.I))
-                location = location_el.get_text(strip=True) if location_el else None
-                apply_url = f"https://www.reed.co.uk/jobs/{job_id}" if job_id else None
-
-                records.append(JobRecord(
-                    job_id=str(job_id),
-                    source="reed",
-                    title=title,
-                    company=company,
-                    location=location,
-                    apply_url=apply_url,
-                    scraped_at=datetime.utcnow().isoformat() + "Z",
-                ))
-            except Exception as e:
-                logger.debug(f"Reed card parse error: {e}")
-        return records

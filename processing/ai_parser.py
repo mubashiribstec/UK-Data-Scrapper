@@ -103,7 +103,7 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
             company=job.company or "Unknown",
             description=job.description[:1500],
         )
-        raw = ask_ai(prompt, config, timeout=60)
+        raw, provider = ask_ai(prompt, config, timeout=60)
         ai_parsed += 1
         if not raw:
             continue
@@ -111,21 +111,23 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
         if not data:
             continue
 
+        tag = f"{provider}_description" if provider else "ai_description"
+
         reqs = data.get("requirements")
         if isinstance(reqs, list) and reqs and not job.requirements:
             job.requirements = [str(r) for r in reqs if r][:8]
-            job.field_sources["requirements"] = "ai_description"
+            job.field_sources["requirements"] = tag
 
         bens = data.get("benefits")
         if isinstance(bens, list) and bens and not job.benefits:
             job.benefits = [str(b) for b in bens if b][:8]
-            job.field_sources["benefits"] = "ai_description"
+            job.field_sources["benefits"] = tag
 
         # Company name normalisation: only fill a missing name, never overwrite
         norm_name = data.get("company_name")
         if norm_name and norm_name != "null" and not job.company:
             job.company = str(norm_name).strip()
-            job.field_sources["company"] = "ai_description"
+            job.field_sources["company"] = tag
 
         if job.company:
             phone = clean_phone(data.get("phone") or "")

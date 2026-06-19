@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class JobRecord:
     job_id: str
-    source: str                    # "nhs_jobs" | "reed" | "indeed"
+    source: str                    # "reed" | "indeed"
     title: str
     company: Optional[str] = None
     company_url: Optional[str] = None

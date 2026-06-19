@@ -1,6 +1,6 @@
 # UK Nurse Jobs Scraper
 
-Scrapes nurse job listings from **NHS Jobs**, **Reed.co.uk**, **Indeed UK**, **TotalJobs**, and **CV-Library**, then enriches every job with company contact details (phone, email, address). Results saved as clean JSON with a built-in data-quality report.
+Scrapes nurse job listings from **Indeed UK** and **Reed.co.uk** (official API only — no other job sites are scraped), then enriches every job with company contact details (phone, email, address) using a search engine and, when details are still missing, the **Google Gemini API**. Results saved as clean JSON (optionally also MySQL/MariaDB for CRM ingestion) with a built-in data-quality report that shows exactly which source — including Gemini — supplied each field.
 
 ---
 
@@ -9,7 +9,7 @@ Scrapes nurse job listings from **NHS Jobs**, **Reed.co.uk**, **Indeed UK**, **T
 ```bash
 # 1. Install dependencies
 pip install -r requirements.txt
-playwright install chromium   # needed for Indeed / TotalJobs / CV-Library
+playwright install chromium   # needed for Indeed
 
 # 2. Copy env template and add your keys (all optional)
 cp .env.example .env
@@ -37,8 +37,8 @@ python interactive.py
 It asks three questions, each with a sensible default if you just press Enter:
 
 1. **Keywords** — comma-separated, or Enter to use the default 7 nursing job titles (`nurse, registered nurse, staff nurse, community nurse, RGN, RMN, RNLD`)
-2. **Sources** — pick by number or name (`1,3` or `nhs,reed`), or Enter for all five sources
-3. **AI fallback** — `y` to use the Gemini → Ollama → Anthropic chain to fill in missing requirements/benefits/phone/email; `N` (default) to use only free regex-based extraction
+2. **Sources** — pick by number or name (`1,2` or `reed,indeed`), or Enter for both (Reed is skipped automatically if `REED_API_KEY` isn't set)
+3. **AI fallback** — `y` to use the Gemini API (with Ollama/Anthropic/browser-AI failover) to fill in missing requirements/benefits/phone/email/website/contact person; `N` (default) to use only free regex-based extraction
 
 It then runs the full pipeline and points you at the [data provenance report](#data-provenance--source-report).
 
@@ -48,10 +48,10 @@ It then runs the full pipeline and points you at the [data provenance report](#d
 
 Four free things make the scraper dramatically more reliable:
 
-1. **Reed API key** (free) — register at [reed.co.uk/developers](https://www.reed.co.uk/developers), put the key in `.env` as `REED_API_KEY=...`. The scraper then uses Reed's official JSON API (no bot detection, full data). Without it, HTML scraping is used as fallback.
-2. **Companies House API key** (free) — register at [developer.company-information.service.gov.uk](https://developer.company-information.service.gov.uk/), set `COMPANIES_HOUSE_API_KEY=...`. Enables company address/director lookups during contact enrichment. Without it that enricher is skipped.
-3. **ChatGPT/Gemini browser login** (free) — run `python main.py --login-ai` once. The AI pipeline then drives the chat websites with your saved session — no API key needed.
-4. **Gemini API key** (free tier, failover) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...`. Used automatically when the browser providers are unavailable, with further failover to your Ollama server.
+1. **Reed API key** (free) — register at [reed.co.uk/developers](https://www.reed.co.uk/developers), put the key in `.env` as `REED_API_KEY=...`. **Required to use Reed at all** — without it Reed is skipped entirely (no HTML-scraping fallback).
+2. **Gemini API key** (free tier) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...` and `AI_FALLBACK_ENABLED=true`. This is the primary way missing job/contact details (company website, contact person, email, phone, requirements, benefits) get filled in — every field it fills is tagged `"gemini"` / `"gemini_description"` in `field_sources` so you always know what came from Gemini.
+3. **Companies House API key** (free) — register at [developer.company-information.service.gov.uk](https://developer.company-information.service.gov.uk/), set `COMPANIES_HOUSE_API_KEY=...`. Enables company address/director lookups during contact enrichment. Without it that enricher is skipped.
+4. **ChatGPT/Gemini browser login** (free, optional) — run `python main.py --login-ai` once to add the browser-based chat providers ahead of the Gemini API in the failover chain. Not required — the Gemini API key alone is enough.
 
 ---
 
@@ -62,38 +62,42 @@ Four free things make the scraper dramatically more reliable:
 | Interactive setup (choose keywords/sources/AI) | `python interactive.py` |
 | Full run, all sources | `python main.py` |
 | One-time ChatGPT/Gemini browser login | `python main.py --login-ai` |
-| Fast test (NHS only, 10 jobs, no contact lookup) | `python main.py --sources nhs --max-results 10 --no-enrich` |
+| Fast test (Indeed only, 10 jobs, no contact lookup) | `python main.py --sources indeed --max-results 10 --no-enrich` |
 | London nurses only | `python main.py --location London` |
 | Specific job titles | `python main.py --keywords "registered nurse" "RMN" "RNLD"` |
 | Jobs posted this week | `python main.py --since 7` |
 | Preview results without saving | `python main.py --dry-run` |
 | Save as JSON + Excel + CSV | `python main.py --format json excel csv` |
+| Export straight into the CRM database | `python main.py --format mysql` |
 | Skip contact lookup (much faster) | `python main.py --no-enrich` |
 | Resume — skip already-seen jobs | `python main.py --resume` |
-| Full AI pipeline (Gemini → Ollama) | `python main.py --ai` |
+| Full AI pipeline (Gemini fills in missing fields) | `python main.py --ai` |
 | Use a proxy list | `python main.py --proxies proxies.txt` |
 
 ---
 
 ## Job Sources
 
+Only two job sources are used — no other job board is scraped:
+
 | Source | Method | Notes |
 |---|---|---|
-| `nhs` | Official REST API | No key needed |
-| `reed` | **Official API** when `REED_API_KEY` is set, HTML fallback otherwise | Free key strongly recommended |
-| `indeed` | Browser (Playwright), structured **mosaic JSON** extraction with CSS fallback | No login needed |
-| `totaljobs` | Browser (Playwright), JSON-LD extraction with CSS fallback | StepStone bot detection — may be partially blocked |
-| `cvlibrary` | Browser (Playwright), JSON-LD extraction with CSS fallback | Cloudflare-protected — may be partially blocked |
+| `indeed` | Browser (Playwright), structured **mosaic JSON** extraction with CSS fallback | No login needed; always runs |
+| `reed` | **Official API only** | Requires `REED_API_KEY` — without it, Reed is skipped entirely (no HTML-scraping fallback) |
 
-Select sources with `--sources nhs reed indeed totaljobs cvlibrary` (default: all five).
+Search-engine results (DuckDuckGo) are used only for **contact/company enrichment** (finding phone/email/address for a company already found via Indeed/Reed) — see [How Contact Enrichment Works](#how-contact-enrichment-works) below, not as a job-discovery source.
+
+Select sources with `--sources reed indeed` (default: both).
 
 ---
 
 ## AI Pipeline (`--ai`)
 
-Providers are tried in a chain with automatic failover:
+The primary AI provider is the **Google Gemini API** — set `GEMINI_API_KEY` in `.env` and it completes missing job/contact fields (company website, contact person, email, phone, requirements, benefits) whenever Indeed/Reed and the search-engine enrichment don't find them. Every field Gemini fills in is tagged `"gemini"` (contacts) or `"gemini_description"` (job description mining) in `field_sources` / `contact.field_sources`, so the output always shows which data came from Gemini specifically.
 
-**ChatGPT (browser) → Gemini (browser) → Gemini API → Ollama → Anthropic**
+Providers are tried in a chain with automatic failover (browser-based providers are optional and only used if you've run `--login-ai`):
+
+**ChatGPT (browser, optional) → Gemini (browser, optional) → Gemini API → Ollama → Anthropic**
 
 ### Browser AI — one-time login, no API key needed
 
@@ -140,26 +144,26 @@ Search:
   --keywords KEYWORD [...]    Job titles to search (default: 7 nursing titles)
   --location LOCATION         Where to search (default: United Kingdom)
   --max-results N             Max jobs per keyword (default: 50)
-  --sources SOURCE [...]      nhs reed indeed totaljobs cvlibrary (default: all)
+  --sources SOURCE [...]      reed indeed (default: both; reed skipped without REED_API_KEY)
   --since DAYS                Only jobs posted in the last N days
 
 Output:
-  --format FORMAT [...]       json  csv  excel  sqlite  (default: json)
+  --format FORMAT [...]       json  csv  excel  sqlite  mysql  (default: json)
   --output-dir PATH           Where to save files (default: ./output)
   --dry-run                   Print a JSON preview, don't save anything
 
 Enrichment & AI:
   --no-enrich                 Skip contact lookup (phone/email) — faster
-  --ai                        Enable the AI pipeline (description parsing + contact fallback)
+  --ai                        Enable the AI pipeline (Gemini fills in missing fields)
   --ai-provider PROVIDER      Force: chatgpt | gemini-web | gemini | ollama | anthropic
 
 Sessions & network:
   --login-ai                  One-time ChatGPT/Gemini browser login (saved + reused)
-  --proxies PATH              Proxy list file for requests-based scrapers (NHS, Reed)
+  --proxies PATH              Proxy list file for requests-based scrapers (Reed)
 
 Other:
   --resume                    Skip jobs already saved in a previous run
-  --headful                   Show the browser (debug Indeed/TotalJobs/CV-Library)
+  --headful                   Show the browser (debug Indeed)
   -v, --verbose               Detailed per-request logging
 ```
 
@@ -179,8 +183,8 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
   "total_with_phone": 71,
   "total_with_email": 85,
   "quality_report": {
-    "per_source_raw": {"nhs_jobs": 120, "reed": 95, "indeed": 60},
-    "per_source_unique": {"nhs_jobs": 80, "reed": 40, "indeed": 22},
+    "per_source_raw": {"reed": 95, "indeed": 60},
+    "per_source_unique": {"reed": 40, "indeed": 22},
     "field_coverage": {"description": 0.72, "salary": 0.61, "phone": 0.31, "email": 0.22},
     "dedup": {"raw_total": 275, "unique": 142, "removed": 133},
     "source_attribution": {
@@ -226,13 +230,14 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
     "company_number": "01607631",
     "company_type": "charity",
     "confidence_score": 90,
-    "ai_used": false,
-    "enrichment_sources": ["job_description", "website", "companies_house"],
+    "ai_used": true,
+    "enrichment_sources": ["job_description", "website", "companies_house", "gemini"],
     "field_sources": {
       "phone_numbers": ["job_description"],
       "emails": ["website"],
       "address": "companies_house",
-      "company_number": "companies_house"
+      "company_number": "companies_house",
+      "contact_person": "gemini"
     }
   },
   "field_sources": {
@@ -257,10 +262,10 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
 | `salary_text` | Human-readable salary string |
 | `salary_min/max` | Parsed numeric values (same unit as `salary_period`) |
 | `salary_period` | `"annual"` or `"hourly"` |
-| `field_sources` | Per-field provenance: which scraper supplied each job field. `"derived"` means it was parsed from another field (e.g. `salary_min` parsed from `salary_text`); `"ai_description"` means AI extracted it from the job description |
+| `field_sources` | Per-field provenance: which scraper supplied each job field. `"derived"` means it was parsed from another field (e.g. `salary_min` parsed from `salary_text`); `"gemini_description"` means the Gemini API extracted it from the job description |
 | `contact.confidence_score` | 0–100: how reliable the contact data is |
-| `contact.ai_used` | `true` if AI was used to find this contact |
-| `contact.enrichment_sources` | Which enrichers found data: `job_description`, `website`, `companies_house`, `cqc`, `charities`, `duckduckgo`, `ai` |
+| `contact.ai_used` | `true` if AI (Gemini, or a configured fallback provider) was used to find this contact |
+| `contact.enrichment_sources` | Which enrichers found data: `job_description`, `website`, `companies_house`, `cqc`, `charities`, `duckduckgo` (search engine), `gemini` (or another AI provider name if configured) |
 | `contact.field_sources` | Per-field provenance: which enricher supplied each contact field |
 | `_hash` | Deduplication fingerprint (title + company + location) |
 
@@ -274,19 +279,22 @@ data come from?" — for example:
 
 ```
 Job data — which source supplied each field (count of jobs):
-  title            reed: 80, indeed: 22, totaljobs: 18
+  title            reed: 80, indeed: 22
   salary_text      reed: 70, indeed: 30
   salary_min       derived: 95, reed: 5
   description      indeed: 60, reed: 40
+  requirements     gemini_description: 12
 
 Contact data — which source supplied each field (count of companies):
   phone_numbers    job_description: 20, companies_house: 15, website: 10
   emails           website: 25, duckduckgo: 5
+  contact_person   gemini: 8
   address          companies_house: 30
 ```
 
 - `derived` = parsed/cleaned from another field (e.g. `salary_min` extracted from `salary_text`)
-- `ai_description` = filled in by the AI pipeline from the job description
+- `gemini_description` = filled in by the Gemini API from the job description (or `<provider>_description` if a different AI provider answered)
+- `gemini` = filled in by the Gemini API contact-lookup fallback (or `<provider>` for another configured AI provider)
 - The same breakdown is in every JSON export under `quality_report.source_attribution`, and per-record under each job's `field_sources` / `contact.field_sources`.
 
 ---
@@ -300,8 +308,8 @@ For each unique company, the scraper tries these sources in order, stopping when
 2. **Companies House** — UK registered address + directors (free, no key needed)
 3. **Charity Commission** — phone/email for hospices and care charities
 4. **CQC open data** — Care Quality Commission registry (care homes, nursing homes)
-5. **DuckDuckGo** — searches `"Company Name" contact phone email UK`
-6. **AI fallback** — Gemini/Ollama/Anthropic chain (only if `--ai` flag is set)
+5. **DuckDuckGo (search engine)** — searches `"Company Name" contact phone email UK`
+6. **AI fallback** — Gemini API (with Ollama/Anthropic/browser-AI failover, only if `--ai` flag is set); any field it fills is tagged with the actual provider name (e.g. `"gemini"`) in `field_sources`
 
 ---
 
@@ -314,7 +322,7 @@ http://user:pass@host:port
 http://other-host:port
 ```
 
-Run with `python main.py --proxies proxies.txt` (or set `PROXIES_FILE=` in `.env`). Proxies apply to the requests-based scrapers (NHS, Reed) and rotate automatically after a 403. The browser-based scrapers don't use proxies — rotating IPs would conflict with the saved Indeed login session.
+Run with `python main.py --proxies proxies.txt` (or set `PROXIES_FILE=` in `.env`). Proxies apply to the requests-based Reed scraper and rotate automatically after a 403. The browser-based Indeed scraper doesn't use proxies — rotating IPs would conflict with the saved login session.
 
 ---
 
@@ -324,10 +332,10 @@ Copy `.env.example` to `.env` and edit as needed. All are optional.
 
 ```env
 # Sources
-REED_API_KEY=                        # free, reed.co.uk/developers
+REED_API_KEY=                        # required to use Reed at all — reed.co.uk/developers
 COMPANIES_HOUSE_API_KEY=             # free, developer.company-information.service.gov.uk
 
-# AI chain (gemini → ollama → anthropic)
+# AI chain (gemini → ollama → anthropic) — Gemini is the primary fill-in provider
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-flash-latest
 OLLAMA_BASE_URL=http://103.207.85.46:11434
@@ -344,6 +352,13 @@ PROXIES_FILE=
 
 # Output
 OUTPUT_DIR=./output
+
+# CRM export — MySQL / MariaDB (optional, see docs/CRM_INTEGRATION.md)
+MYSQL_HOST=
+MYSQL_PORT=3306
+MYSQL_DATABASE=
+MYSQL_USER=
+MYSQL_PASSWORD=
 
 # Email notifications after each scheduled run (optional)
 SMTP_HOST=smtp.gmail.com
@@ -384,11 +399,8 @@ UK-Data-Scrapper/
 ├── .env.example       ← copy to .env
 │
 ├── scrapers/
-│   ├── nhs.py             ← NHS Jobs REST API
-│   ├── reed.py            ← Reed official API + HTML fallback
+│   ├── reed.py            ← Reed official API only (no key = skipped)
 │   ├── indeed.py          ← Indeed UK (Playwright, mosaic JSON)
-│   ├── totaljobs.py       ← TotalJobs (Playwright, JSON-LD)
-│   ├── cvlibrary.py       ← CV-Library (Playwright, JSON-LD)
 │   ├── playwright_base.py ← shared browser boilerplate + anti-detection
 │   └── jsonld.py          ← shared schema.org JobPosting parser
 │
@@ -412,7 +424,11 @@ UK-Data-Scrapper/
 │   ├── json_export.py
 │   ├── csv_export.py
 │   ├── excel_export.py   ← 3-sheet workbook
-│   └── sqlite_export.py  ← persistent store
+│   ├── sqlite_export.py  ← persistent store
+│   └── mysql_export.py   ← MySQL/MariaDB CRM export
+│
+├── docs/
+│   └── CRM_INTEGRATION.md ← Laravel + MariaDB integration guide
 │
 ├── utils/
 │   ├── ai_client.py   ← AI failover chain (browser + API providers)
@@ -440,24 +456,11 @@ This is a known Windows issue — automatically fixed in the scraper code. If yo
 **Indeed blocked / CAPTCHA**
 Run with `--headful`, solve the CAPTCHA manually, and retry. Indeed blocks come and go — waiting a few minutes between runs and lowering `--max-results` also helps.
 
-**Reed returns 403 / 0 jobs**
-Get a free API key from [reed.co.uk/developers](https://www.reed.co.uk/developers) and set `REED_API_KEY` in `.env` — the official API has no bot detection. Without a key the HTML fallback warms up the session and retries, but can still be blocked.
+**Reed returns 0 jobs / "no REED_API_KEY configured"**
+Get a free API key from [reed.co.uk/developers](https://www.reed.co.uk/developers) and set `REED_API_KEY` in `.env`. Reed is used exclusively through the official API — there is no HTML-scraping fallback, so without a key Reed is skipped entirely and only Indeed runs.
 
-**TotalJobs / CV-Library return 0 jobs**
-Both sites use aggressive bot protection (StepStone / Cloudflare). Try `--headful` to see what the browser hits. If they stay blocked from your network, exclude them: `--sources nhs reed indeed`.
-
-**NHS: "Expecting value: line 1 column 1" / 403 / empty response**
-- The NHS API blocks many datacenter/VPS IPs — run from a residential connection
-- Check [api.jobs.nhs.uk](https://api.jobs.nhs.uk) status
-- Use `--verbose` to see the response preview the scraper logs
-
-**NHS: "expected JSON but got text/html" with a garbled preview (starts with `\x1b`)**
-The NHS API (and some other sites) respond Brotli-compressed (`Content-Encoding: br`).
-Without the `brotli` package, `requests` cannot decompress them and you get raw
-compressed bytes instead of JSON. Fix: re-install dependencies to pick up `brotli`:
-```bash
-pip install -r requirements.txt
-```
+**Reed API key rejected (401/403)**
+Double-check the key value in `.env`. A rejected key causes Reed to be skipped for the rest of that run (it does not fall back to HTML scraping).
 
 **Companies House enricher: 401 Unauthorized on every company**
 The Companies House API requires a free API key. Register at
@@ -466,10 +469,13 @@ and set `COMPANIES_HOUSE_API_KEY=...` in `.env`. Without a key the enricher is
 skipped automatically (no failed requests).
 
 **AI: "all providers in the chain failed"**
-- ChatGPT/Gemini browser: run `python main.py --login-ai` again if a session expired; set `PLAYWRIGHT_HEADLESS=false` in `.env` to watch what the browser hits
-- Gemini API: check `GEMINI_API_KEY` is valid and has quota left
+- Gemini API: check `GEMINI_API_KEY` is valid (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) and has quota left
+- ChatGPT/Gemini browser (optional, if configured): run `python main.py --login-ai` again if a session expired; set `PLAYWRIGHT_HEADLESS=false` in `.env` to watch what the browser hits
 - Ollama: confirm the server is reachable (`curl http://103.207.85.46:11434/api/tags`) and the model is pulled (`ollama pull llama3.2`)
 - A provider that fails twice is skipped for the rest of the run — restart to retry it
+
+**MySQL export fails: "MySQL export requires MYSQL_HOST and MYSQL_DATABASE"**
+Set `MYSQL_HOST`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD` in `.env` before running with `--format mysql`. See [docs/CRM_INTEGRATION.md](docs/CRM_INTEGRATION.md).
 
 **"No jobs collected"**
 Use `--verbose` to see per-request details. The scraper logs the HTTP status and response preview for every failed request, which will identify the cause.

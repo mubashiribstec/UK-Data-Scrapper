@@ -14,13 +14,13 @@ from config import Config
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python main.py",
-        description="UK Nurse Jobs Scraper — scrapes NHS Jobs, Reed.co.uk, and Indeed UK",
+        description="UK Nurse Jobs Scraper — scrapes Indeed UK and Reed.co.uk (API only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 QUICK START
 -----------
   python main.py                                     # full run, saves to output/jobs_DATE.json
-  python main.py --sources nhs --max-results 10      # fast test, NHS only
+  python main.py --sources indeed --max-results 10   # fast test, Indeed only
   python main.py --no-enrich                         # skip contact lookup (much faster)
   python main.py --since 7                           # jobs posted in last 7 days only
 
@@ -29,16 +29,16 @@ COMMON RECIPES
   # London registered nurses, JSON only:
   python main.py --keywords "registered nurse" "staff nurse" --location London
 
-  # All sources, save everything (JSON + CSV + Excel + SQLite):
-  python main.py --format json csv excel sqlite
+  # All sources, save everything (JSON + CSV + Excel + SQLite + MySQL/MariaDB):
+  python main.py --format json csv excel sqlite mysql
 
   # Quick smoke test (no saving):
-  python main.py --sources nhs --max-results 5 --no-enrich --dry-run
+  python main.py --sources indeed --max-results 5 --no-enrich --dry-run
 
   # One-time ChatGPT/Gemini browser login (saved and reused by all later runs):
   python main.py --login-ai
 
-  # Enable the AI pipeline (ChatGPT/Gemini browser first, API failover):
+  # Enable the AI pipeline (Gemini API fills in missing contact/job details):
   python main.py --ai
 
   # Resume last run — skip already-seen jobs:
@@ -46,12 +46,9 @@ COMMON RECIPES
 
 SOURCES
 -------
-  nhs        NHS Jobs official API
-  reed       Reed official API if REED_API_KEY is set (free key from
-             reed.co.uk/developers), HTML scraping otherwise
-  indeed     Indeed UK via browser (no login needed)
-  totaljobs  TotalJobs via browser
-  cvlibrary  CV-Library via browser
+  indeed     Indeed UK via browser (no login needed) — primary job source
+  reed       Reed official API, ONLY used when REED_API_KEY is set
+             (free key from reed.co.uk/developers); skipped entirely otherwise
 
 OUTPUT
 ------
@@ -75,9 +72,10 @@ OUTPUT
     )
     parser.add_argument(
         "--sources", nargs="+",
-        choices=["nhs", "reed", "indeed", "totaljobs", "cvlibrary"],
+        choices=["reed", "indeed"],
         metavar="SOURCE",
-        help="Sources to scrape: nhs reed indeed totaljobs cvlibrary (default: all)",
+        help="Sources to scrape: reed indeed (default: both; reed is skipped "
+             "automatically if REED_API_KEY is not set)",
     )
     parser.add_argument(
         "--no-enrich", action="store_true",
@@ -104,9 +102,10 @@ OUTPUT
     )
     parser.add_argument(
         "--format", nargs="+",
-        choices=["json", "csv", "excel", "sqlite"],
+        choices=["json", "csv", "excel", "sqlite", "mysql"],
         metavar="FORMAT",
-        help="Output format(s): json csv excel sqlite (default: json)",
+        help="Output format(s): json csv excel sqlite mysql (default: json). "
+             "'mysql' writes to a MySQL/MariaDB database configured via MYSQL_* env vars",
     )
     parser.add_argument(
         "--output-dir", metavar="PATH", default=None,
