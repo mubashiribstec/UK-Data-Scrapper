@@ -23,6 +23,7 @@ def _build_job_object(job, contacts: dict) -> dict:
             "ai_used": contact_record.ai_used,
             "enrichment_sources": contact_record.enrichment_sources,
             "field_sources": contact_record.field_sources,
+            "changes": contact_record.changes,
         }
     else:
         contact = None

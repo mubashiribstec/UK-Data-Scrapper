@@ -211,6 +211,15 @@ def run_pipeline(
         logger.info("Stage 4: Contact enrichment skipped (--no-enrich) — "
                     f"keeping {len(seed_contacts)} contacts mined from job descriptions")
 
+    # Persist the contact cache regardless of export format, so future runs can
+    # reuse already-fetched companies (cross-run cache).
+    if getattr(config, "cache_contacts", True) and contacts:
+        try:
+            from exporters.sqlite_export import upsert_contacts
+            upsert_contacts(config.sqlite_path, contacts, run_id)
+        except Exception as e:
+            logger.debug(f"Contact cache persist failed: {e}")
+
     _partial_contacts = contacts
 
     if _interrupted:

@@ -27,6 +27,11 @@ class Config:
     # Enrichment
     enrich_contacts: bool = True
     enrichment_timeout: int = 10
+    # Cross-run contact cache: reuse a company's already-fetched contact data on
+    # later runs instead of re-fetching, refreshing only when it's gone stale.
+    cache_contacts: bool = True
+    contact_cache_days: int = 30        # re-fetch a cached company older than this
+    fresh_enrichment: bool = False      # --fresh: ignore the cache, re-fetch everything
     ai_fallback_enabled: bool = False
     ai_provider: str = ""               # "" = automatic chain (gemini → ollama → anthropic)
     ai_model: str = "llama3.2"          # Ollama model name
@@ -109,6 +114,10 @@ class Config:
             self.playwright_headless = os.getenv("PLAYWRIGHT_HEADLESS").lower() != "false"
         if os.getenv("ENRICH_CONTACTS"):
             self.enrich_contacts = os.getenv("ENRICH_CONTACTS").lower() == "true"
+        if os.getenv("CACHE_CONTACTS"):
+            self.cache_contacts = os.getenv("CACHE_CONTACTS").lower() == "true"
+        if os.getenv("CONTACT_CACHE_DAYS"):
+            self.contact_cache_days = int(os.getenv("CONTACT_CACHE_DAYS"))
         if os.getenv("MYSQL_HOST"):
             self.mysql_host = os.getenv("MYSQL_HOST")
         if os.getenv("MYSQL_PORT"):

@@ -21,6 +21,7 @@ class ContactRecord:
     enriched_at: Optional[str] = None
     confidence_score: int = 0
     field_sources: dict = field(default_factory=dict)  # field name -> origin source(s)
+    changes: dict = field(default_factory=dict)  # field -> {"old": [...], "new": [...]} when cached vs freshly-scraped differ
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +38,7 @@ class ContactRecord:
             "enriched_at": self.enriched_at,
             "confidence_score": self.confidence_score,
             "field_sources": self.field_sources,
+            "changes": self.changes,
         }
 
 
@@ -131,6 +133,11 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
             if s not in all_sources:
                 all_sources.append(s)
     merged.enrichment_sources = all_sources
+
+    # Change tracking: carry through any old/new diffs set by the cache layer
+    for r in records:
+        if r.changes:
+            merged.changes.update(r.changes)
 
     # AI used flag
     merged.ai_used = any(r.ai_used for r in records)

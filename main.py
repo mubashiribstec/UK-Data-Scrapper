@@ -38,6 +38,9 @@ COMMON RECIPES
   # Enable the AI pipeline (Gemini API fills in missing contact/job details):
   python main.py --ai
 
+  # Re-fetch every company, ignoring the cross-run contact cache:
+  python main.py --fresh
+
   # Resume last run — skip already-seen jobs:
   python main.py --resume
 
@@ -81,6 +84,14 @@ OUTPUT
     parser.add_argument(
         "--ai", action="store_true",
         help="Enable AI fallback for companies with no contact data found",
+    )
+    parser.add_argument(
+        "--fresh", action="store_true",
+        help="Ignore the cross-run contact cache and re-fetch every company from scratch",
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="Don't read or write the cross-run contact cache for this run",
     )
     parser.add_argument(
         "--ai-provider", choices=["gemini", "ollama", "anthropic"],
@@ -154,6 +165,10 @@ def main():
         config.enrich_contacts = False
     if args.ai:
         config.ai_fallback_enabled = True
+    if args.fresh:
+        config.fresh_enrichment = True
+    if args.no_cache:
+        config.cache_contacts = False
     if args.ai_provider:
         config.ai_provider = args.ai_provider.replace("-", "_")
     if args.format:

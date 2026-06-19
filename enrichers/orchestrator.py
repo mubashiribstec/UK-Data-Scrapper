@@ -1,6 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from processing.merger import ContactRecord, merge_contacts
@@ -13,8 +13,45 @@ def _has_enough_data(record: ContactRecord) -> bool:
     return bool(record.phone_numbers) and bool(record.emails)
 
 
+def _cache_is_fresh(cached: ContactRecord, max_age_days: int) -> bool:
+    """True if the cached record has real data and isn't older than max_age_days."""
+    if not (cached.phone_numbers or cached.emails or cached.address):
+        return False
+    if not cached.enriched_at:
+        return False
+    try:
+        raw = cached.enriched_at.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return False
+    return dt >= datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+
+def _diff_against_cache(cached: ContactRecord, seed: Optional[ContactRecord]) -> dict:
+    """Compare this run's freshly-scraped seed contacts to the cached values.
+
+    Returns a changes dict {field: {"old": [...], "new": [...]}} for phone/email
+    fields where the seed introduces values the cache didn't have.
+    """
+    changes = {}
+    if not seed:
+        return changes
+    for field_name, cached_vals, seed_vals in (
+        ("phone_numbers", cached.phone_numbers, seed.phone_numbers),
+        ("emails", cached.emails, seed.emails),
+    ):
+        cached_set = {v.lower() for v in cached_vals}
+        new_vals = [v for v in seed_vals if v.lower() not in cached_set]
+        if new_vals:
+            changes[field_name] = {"old": list(cached_vals), "new": list(seed_vals)}
+    return changes
+
+
 def _enrich_company(company: str, company_url: Optional[str], location: Optional[str], config,
-                    seed: Optional[ContactRecord] = None) -> ContactRecord:
+                    seed: Optional[ContactRecord] = None,
+                    cached: Optional[ContactRecord] = None) -> ContactRecord:
     """Run all enrichers in priority order for a single company."""
     from enrichers.website import enrich_from_website
     from enrichers.companies_house import enrich_from_companies_house
@@ -26,6 +63,21 @@ def _enrich_company(company: str, company_url: Optional[str], location: Optional
 
     collected_records = []
     merged = ContactRecord(company=company)
+
+    # -1. Cross-run cache: if this company was already enriched recently, reuse
+    #     it and skip every external lookup. Still diff against the fresh seed so
+    #     a changed phone/email in this run's job ad surfaces (old vs new).
+    cache_days = getattr(config, "contact_cache_days", 30)
+    if cached and _cache_is_fresh(cached, cache_days):
+        changes = _diff_against_cache(cached, seed)
+        records = [cached]
+        if seed and (seed.phone_numbers or seed.emails):
+            records.append(seed)
+        merged = merge_contacts(records, company)
+        if "cache" not in merged.enrichment_sources:
+            merged.enrichment_sources.append("cache")
+        merged.changes = changes
+        return merged
 
     # 0. Contacts mined from the job description itself — highest confidence,
     #    already collected for free. May make all external lookups unnecessary.
@@ -163,6 +215,18 @@ class EnrichmentOrchestrator:
             if name not in companies:
                 companies[name] = (job.company_url, job.location)
 
+        # Cross-run cache: load previously-enriched companies so recently-fetched
+        # ones can be reused instead of re-fetched (unless --fresh was passed).
+        cached_contacts: dict[str, ContactRecord] = {}
+        if getattr(self.config, "cache_contacts", True) and not getattr(self.config, "fresh_enrichment", False):
+            try:
+                from exporters.sqlite_export import get_cached_contacts
+                cached_contacts = get_cached_contacts(self.config.sqlite_path)
+                if cached_contacts:
+                    logger.info(f"Contact cache: loaded {len(cached_contacts)} previously-enriched companies")
+            except Exception as e:
+                logger.debug(f"Contact cache load failed: {e}")
+
         logger.info(f"Enriching {len(companies)} unique companies...")
 
         results: dict[str, ContactRecord] = {}
@@ -177,7 +241,7 @@ class EnrichmentOrchestrator:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_company = {
                 executor.submit(_enrich_company, name, url, loc, self.config,
-                                seed_contacts.get(name)): name
+                                seed_contacts.get(name), cached_contacts.get(name)): name
                 for name, (url, loc) in companies.items()
             }
 

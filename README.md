@@ -105,8 +105,8 @@ Configure in `.env` (all optional):
 ```env
 GEMINI_API_KEY=your_key            # free tier, primary provider
 GEMINI_MODEL=gemini-flash-latest
-OLLAMA_BASE_URL=http://103.207.85.46:11434
-AI_MODEL=llama3.2
+OLLAMA_BASE_URL=http://localhost:11434
+AI_MODEL=llama3.2:3b               # exact tag from `ollama list` / `/api/tags`
 ANTHROPIC_API_KEY=                 # paid, last in chain
 ```
 
@@ -142,6 +142,8 @@ Enrichment & AI:
   --no-enrich                 Skip contact lookup (phone/email) — faster
   --ai                        Enable the AI pipeline (Gemini fills in missing fields)
   --ai-provider PROVIDER      Force: gemini | ollama | anthropic
+  --fresh                     Ignore the contact cache — re-fetch every company
+  --no-cache                  Don't read or write the contact cache this run
 
 Network:
   --proxies PATH              Proxy list file for requests-based scrapers (Reed)
@@ -298,6 +300,20 @@ For each unique company, the scraper tries these sources in order, stopping when
 6. **SerpAPI (paid Google search)** — fallback when DuckDuckGo fails/is blocked, only if `SERPAPI_KEY` is set
 7. **AI fallback** — Gemini API (with Ollama/Anthropic failover, only if `--ai` flag is set); Gemini uses live Google search-grounding for the lookup, and any field it fills is tagged with the actual provider name (e.g. `"gemini"`) in `field_sources`
 
+### Cross-run contact cache (new/old change tracking)
+
+Once a company's contact data has been fetched, it's stored in the SQLite DB (`output/scraper.db`) and **reused on later runs instead of being re-fetched** — so a second run over the same companies costs almost no network calls. Behaviour:
+
+- **Auto-reuse**: enabled by default (`CACHE_CONTACTS=true`). A company enriched within the last `CONTACT_CACHE_DAYS` (default **30**) days is served straight from the cache, tagged with a `"cache"` entry in `enrichment_sources`.
+- **Self-healing**: a cached company older than the window is re-fetched from scratch (fresh data overwrites the cache).
+- **Change tracking**: if this run's job ad lists a phone/email that differs from the cached value, **both are kept** — the union appears in `phone_numbers`/`emails`, and a `changes` block records what differed:
+  ```json
+  "changes": { "phone_numbers": { "old": ["+44 20 1234 5678"], "new": ["+44 20 9999 0000"] } }
+  ```
+- **Force a refresh**: `python main.py --fresh` ignores the cache and re-fetches everything; `--no-cache` skips reading and writing the cache for that run. Tune the window with `CONTACT_CACHE_DAYS` in `.env`.
+
+The cache is written after every run regardless of `--format`, so it works even with the default JSON-only output.
+
 ---
 
 ## Proxies (optional)
@@ -341,8 +357,8 @@ COMPANIES_HOUSE_API_KEY=             # free, developer.company-information.servi
 # AI chain (gemini → ollama → anthropic) — Gemini is the primary fill-in provider
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-flash-latest
-OLLAMA_BASE_URL=http://103.207.85.46:11434
-AI_MODEL=llama3.2
+OLLAMA_BASE_URL=http://localhost:11434
+AI_MODEL=llama3.2:3b               # exact tag from `ollama list` / `/api/tags`
 ANTHROPIC_API_KEY=
 AI_FALLBACK_ENABLED=false            # --ai flag does the same
 AI_CALL_LIMIT=20                     # contact-lookup budget per run
@@ -473,7 +489,7 @@ skipped automatically (no failed requests).
 
 **AI: "all providers in the chain failed"**
 - Gemini API: check `GEMINI_API_KEY` is valid (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) and has quota left
-- Ollama: confirm the server is reachable (`curl http://103.207.85.46:11434/api/tags`) and the model is pulled (`ollama pull llama3.2`)
+- Ollama: confirm `OLLAMA_BASE_URL` points at the host actually running Ollama (defaults to `http://localhost:11434`), that the server is reachable (`curl http://localhost:11434/api/tags`), and the model is pulled (`ollama pull llama3.2:3b`). Set `AI_MODEL` to the exact tag from `/api/tags` — the scraper auto-matches tag suffixes (so `llama3.2` resolves to a pulled `llama3.2:3b`), but it can't invent a model that isn't pulled
 - A provider that fails twice is skipped for the rest of the run — restart to retry it
 
 **MySQL export fails: "MySQL export requires MYSQL_HOST and MYSQL_DATABASE"**

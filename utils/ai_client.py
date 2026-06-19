@@ -83,6 +83,30 @@ def _list_ollama_models(base_url: str, timeout: int = 5) -> Optional[list]:
         return None
 
 
+def _resolve_ollama_model(requested: str, available: list) -> Optional[str]:
+    """Map a requested model name to an actually-pulled tag.
+
+    Ollama tags are exact, so a request for "llama3.2" 404s when only
+    "llama3.2:3b" is pulled. Resolve forgiving matches: exact first, then a
+    tag-suffix match in either direction (requested "llama3.2" -> "llama3.2:3b",
+    or requested "llama3.2:3b" when "llama3.2" is what's listed). Returns the
+    resolved name, or None if nothing sensible matches.
+    """
+    if not available:
+        return None
+    if requested in available:
+        return requested
+    req_base = requested.split(":", 1)[0]
+    matches = [m for m in available if m == req_base or m.split(":", 1)[0] == req_base]
+    if len(matches) == 1:
+        return matches[0]
+    # Prefer an exact base match (e.g. requested "llama3.2:3b" -> available "llama3.2")
+    for m in matches:
+        if m == req_base:
+            return m
+    return matches[0] if matches else None
+
+
 @retry(max_attempts=2, base_delay=1.5, max_delay=5.0)
 def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Optional[str]:
     base = base_url.rstrip("/")
@@ -92,10 +116,22 @@ def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Option
         timeout=timeout,
     )
     if resp.status_code == 404:
-        # Almost always "model not pulled on this server". A RuntimeError
-        # (not a RequestException) skips the @retry — a missing model won't
-        # appear on retry — and names the models that ARE available.
+        # Almost always "model not pulled on this server" or a tag-suffix
+        # mismatch. Try to resolve the requested name to a pulled tag and retry
+        # once; only error out if nothing matches.
         available = _list_ollama_models(base, timeout=5)
+        resolved = _resolve_ollama_model(model, available or [])
+        if resolved and resolved != model:
+            logger.info(f"Ollama: model '{model}' not found, using pulled tag '{resolved}'")
+            resp = requests.post(
+                f"{base}/api/generate",
+                json={"model": resolved, "prompt": prompt, "stream": False},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json().get("response", "")
+        # A RuntimeError (not a RequestException) skips the @retry — a missing
+        # model won't appear on retry — and names the models that ARE available.
         if available is not None:
             raise RuntimeError(
                 f"Ollama: model '{model}' not found on {base}. "
