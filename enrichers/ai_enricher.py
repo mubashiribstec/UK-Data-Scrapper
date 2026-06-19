@@ -15,7 +15,7 @@ Company name: {company_name}
 Industry: {industry_hint}
 Known location: {location}
 
-Search your knowledge for this specific UK organisation's contact details.
+Search the web for this specific UK organisation's contact details.
 If you find details, respond ONLY with a JSON object in this exact format:
 {{
   "phone": "+44 XXX XXX XXXX or null",
@@ -57,7 +57,7 @@ def enrich_with_ai(
     )
 
     logger.info(f"AI enricher: looking up '{company}' (call #{get_call_count() + 1})")
-    raw_response, provider = ask_ai(prompt, config, timeout=60)
+    raw_response, provider = ask_ai(prompt, config, timeout=60, use_search=True)
     if not raw_response:
         return None
 

@@ -73,21 +73,17 @@ def _prompt_sources() -> list:
 
 
 def _prompt_ai(config) -> bool:
-    print("\nUse AI (ChatGPT/Gemini in browser, API failover) to fill in missing fields")
+    print("\nUse AI (Gemini API, with Ollama/Anthropic failover) to fill in missing fields")
     print("(requirements, benefits, phone, email) when a source doesn't provide them?")
     raw = input("Enable AI fallback? [y/N] > ").strip().lower()
     if raw not in ("y", "yes"):
         return False
 
-    from utils.browser_ai import browser_ai_ready, profile_dir_for, run_ai_login
-    have_session = (browser_ai_ready(profile_dir_for("chatgpt", config))
-                    or browser_ai_ready(profile_dir_for("gemini_web", config)))
-    if not have_session:
-        print("\nNo saved ChatGPT/Gemini browser login found.")
-        print("With a one-time login, AI runs through the chat websites (free, no API key needed).")
-        raw = input("Log in now? A browser window will open. [Y/n] > ").strip().lower()
-        if raw not in ("n", "no"):
-            run_ai_login(config)
+    if not config.gemini_api_key:
+        print("\nNo GEMINI_API_KEY found in your environment / .env file.")
+        print("Set GEMINI_API_KEY in .env to enable AI lookups (free key from "
+              "aistudio.google.com/app/apikey).")
+        print("AI will be skipped at runtime until a provider is configured.")
     return True
 
 

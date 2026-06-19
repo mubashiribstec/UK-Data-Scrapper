@@ -14,11 +14,7 @@ playwright install chromium   # needed for Indeed
 # 2. Copy env template and add your keys (all optional)
 cp .env.example .env
 
-# 3. (Optional, once) log in to ChatGPT/Gemini in a browser — the session
-#    is saved and reused by every later --ai run, no API key needed
-python main.py --login-ai
-
-# 4. Run
+# 3. Run
 python main.py
 ```
 
@@ -38,7 +34,7 @@ It asks three questions, each with a sensible default if you just press Enter:
 
 1. **Keywords** — comma-separated, or Enter to use the default 7 nursing job titles (`nurse, registered nurse, staff nurse, community nurse, RGN, RMN, RNLD`)
 2. **Sources** — pick by number or name (`1,2` or `reed,indeed`), or Enter for both (Reed is skipped automatically if `REED_API_KEY` isn't set)
-3. **AI fallback** — `y` to use the Gemini API (with Ollama/Anthropic/browser-AI failover) to fill in missing requirements/benefits/phone/email/website/contact person; `N` (default) to use only free regex-based extraction
+3. **AI fallback** — `y` to use the Gemini API (with Ollama/Anthropic failover) to fill in missing requirements/benefits/phone/email/website/contact person; `N` (default) to use only free regex-based extraction
 
 It then runs the full pipeline and points you at the [data provenance report](#data-provenance--source-report).
 
@@ -46,12 +42,12 @@ It then runs the full pipeline and points you at the [data provenance report](#d
 
 ## Recommended one-time setup
 
-Four free things make the scraper dramatically more reliable:
+A few things make the scraper dramatically more reliable:
 
 1. **Reed API key** (free) — register at [reed.co.uk/developers](https://www.reed.co.uk/developers), put the key in `.env` as `REED_API_KEY=...`. **Required to use Reed at all** — without it Reed is skipped entirely (no HTML-scraping fallback).
-2. **Gemini API key** (free tier) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...` and `AI_FALLBACK_ENABLED=true`. This is the primary way missing job/contact details (company website, contact person, email, phone, requirements, benefits) get filled in — every field it fills is tagged `"gemini"` / `"gemini_description"` in `field_sources` so you always know what came from Gemini.
+2. **Gemini API key** (free tier) — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), set `GEMINI_API_KEY=...` and `AI_FALLBACK_ENABLED=true`. This is the primary way missing job/contact details (company website, contact person, email, phone, requirements, benefits) get filled in — every field it fills is tagged `"gemini"` / `"gemini_description"` in `field_sources` so you always know what came from Gemini. Live Google **search-grounding** is enabled automatically for company contact lookups once this key is set (no extra key/flag).
 3. **Companies House API key** (free) — register at [developer.company-information.service.gov.uk](https://developer.company-information.service.gov.uk/), set `COMPANIES_HOUSE_API_KEY=...`. Enables company address/director lookups during contact enrichment. Without it that enricher is skipped.
-4. **ChatGPT/Gemini browser login** (free, optional) — run `python main.py --login-ai` once to add the browser-based chat providers ahead of the Gemini API in the failover chain. Not required — the Gemini API key alone is enough.
+4. **SerpAPI key** (paid, optional) — register at [serpapi.com](https://serpapi.com/), set `SERPAPI_KEY=...`. A reliable Google-search API used as a fallback when the free DuckDuckGo enricher fails or is blocked (common on datacenter/VPS IPs). Without it that fallback is skipped.
 
 ---
 
@@ -61,7 +57,6 @@ Four free things make the scraper dramatically more reliable:
 |---|---|
 | Interactive setup (choose keywords/sources/AI) | `python interactive.py` |
 | Full run, all sources | `python main.py` |
-| One-time ChatGPT/Gemini browser login | `python main.py --login-ai` |
 | Fast test (Indeed only, 10 jobs, no contact lookup) | `python main.py --sources indeed --max-results 10 --no-enrich` |
 | London nurses only | `python main.py --location London` |
 | Specific job titles | `python main.py --keywords "registered nurse" "RMN" "RNLD"` |
@@ -85,7 +80,7 @@ Only two job sources are used — no other job board is scraped:
 | `indeed` | Browser (Playwright), structured **mosaic JSON** extraction with CSS fallback | No login needed; always runs |
 | `reed` | **Official API only** | Requires `REED_API_KEY` — without it, Reed is skipped entirely (no HTML-scraping fallback) |
 
-Search-engine results (DuckDuckGo) are used only for **contact/company enrichment** (finding phone/email/address for a company already found via Indeed/Reed) — see [How Contact Enrichment Works](#how-contact-enrichment-works) below, not as a job-discovery source.
+Search-engine results (DuckDuckGo, with SerpAPI as a paid fallback) are used only for **contact/company enrichment** (finding phone/email/address for a company already found via Indeed/Reed) — see [How Contact Enrichment Works](#how-contact-enrichment-works) below, not as a job-discovery source.
 
 Select sources with `--sources reed indeed` (default: both).
 
@@ -95,36 +90,27 @@ Select sources with `--sources reed indeed` (default: both).
 
 The primary AI provider is the **Google Gemini API** — set `GEMINI_API_KEY` in `.env` and it completes missing job/contact fields (company website, contact person, email, phone, requirements, benefits) whenever Indeed/Reed and the search-engine enrichment don't find them. Every field Gemini fills in is tagged `"gemini"` (contacts) or `"gemini_description"` (job description mining) in `field_sources` / `contact.field_sources`, so the output always shows which data came from Gemini specifically.
 
-Providers are tried in a chain with automatic failover (browser-based providers are optional and only used if you've run `--login-ai`):
+Providers are tried in a chain with automatic failover — **API only, no browser automation**:
 
-**ChatGPT (browser, optional) → Gemini (browser, optional) → Gemini API → Ollama → Anthropic**
+**Gemini API → Ollama → Anthropic**
 
-### Browser AI — one-time login, no API key needed
+### Gemini search-grounding
 
-```bash
-python main.py --login-ai
-```
+Company contact lookups call Gemini with its built-in **`google_search` tool** enabled, so Gemini runs a live Google search before answering instead of relying only on its training data. This is automatic once `GEMINI_API_KEY` is set — no extra key or flag. Google bills grounded requests with a small per-request grounding fee, so the `AI_CALL_LIMIT` budget still applies.
 
-A visible browser opens ChatGPT, then Gemini — sign in to each (you can skip either one). Sessions are saved to `output/.browser/chatgpt/` and `output/.browser/gemini/` and **every later `--ai` run drives the chat websites headless using the saved login**. Repeat only if a site logs you out (the scraper will tell you: `session expired — run: python main.py --login-ai`).
-
-Notes on browser AI:
-- Prompts are answered through the normal chat web UI, so it's free but slower than an API (each answer takes ~15–60 s; calls run one at a time through a single browser)
-- Chat sites change their page layout from time to time and may challenge automated headless browsers — when that happens the call fails and the chain falls over to the API providers below automatically
-- **"Verify you are human" challenge:** if ChatGPT/Gemini shows a Cloudflare human-check, the scraper automatically re-opens that provider in a **visible** window so you can solve it — leave the window open, tick the box, and it continues (the cleared cookie is reused for the rest of the run). To always start visible, run with `--ai-headful` or set `BROWSER_AI_HEADFUL=true` in `.env`.
-
-### API failover providers
+### Providers
 
 Configure in `.env` (all optional):
 
 ```env
-GEMINI_API_KEY=your_key            # free tier
+GEMINI_API_KEY=your_key            # free tier, primary provider
 GEMINI_MODEL=gemini-flash-latest
 OLLAMA_BASE_URL=http://103.207.85.46:11434
 AI_MODEL=llama3.2
 ANTHROPIC_API_KEY=                 # paid, last in chain
 ```
 
-A provider that fails twice in a row (quota, network, layout change) is skipped for the rest of the run. Force a single provider with `--ai-provider chatgpt|gemini-web|gemini|ollama|anthropic`.
+A provider that fails twice in a row (quota, network) is skipped for the rest of the run. Force a single provider with `--ai-provider gemini|ollama|anthropic`.
 
 With `--ai` enabled the AI does three jobs:
 1. **Description parsing** — extracts `requirements` and `benefits` lists from job ads that don't provide them (budget: `AI_PARSE_LIMIT`, default 30/run)
@@ -155,10 +141,9 @@ Output:
 Enrichment & AI:
   --no-enrich                 Skip contact lookup (phone/email) — faster
   --ai                        Enable the AI pipeline (Gemini fills in missing fields)
-  --ai-provider PROVIDER      Force: chatgpt | gemini-web | gemini | ollama | anthropic
+  --ai-provider PROVIDER      Force: gemini | ollama | anthropic
 
-Sessions & network:
-  --login-ai                  One-time ChatGPT/Gemini browser login (saved + reused)
+Network:
   --proxies PATH              Proxy list file for requests-based scrapers (Reed)
   --browser-proxy URL         Residential proxy for the Indeed browser (avoids bot blocks)
 
@@ -266,7 +251,7 @@ Default output is a single JSON file: `output/jobs_YYYY-MM-DD_HH-MM.json`
 | `field_sources` | Per-field provenance: which scraper supplied each job field. `"derived"` means it was parsed from another field (e.g. `salary_min` parsed from `salary_text`); `"gemini_description"` means the Gemini API extracted it from the job description |
 | `contact.confidence_score` | 0–100: how reliable the contact data is |
 | `contact.ai_used` | `true` if AI (Gemini, or a configured fallback provider) was used to find this contact |
-| `contact.enrichment_sources` | Which enrichers found data: `job_description`, `website`, `companies_house`, `cqc`, `charities`, `duckduckgo` (search engine), `gemini` (or another AI provider name if configured) |
+| `contact.enrichment_sources` | Which enrichers found data: `job_description`, `website`, `companies_house`, `cqc`, `charities`, `duckduckgo` (search engine), `serpapi` (paid search fallback), `gemini` (or another AI provider name if configured) |
 | `contact.field_sources` | Per-field provenance: which enricher supplied each contact field |
 | `_hash` | Deduplication fingerprint (title + company + location) |
 
@@ -310,7 +295,8 @@ For each unique company, the scraper tries these sources in order, stopping when
 3. **Charity Commission** — phone/email for hospices and care charities
 4. **CQC open data** — Care Quality Commission registry (care homes, nursing homes)
 5. **DuckDuckGo (search engine)** — searches `"Company Name" contact phone email UK`
-6. **AI fallback** — Gemini API (with Ollama/Anthropic/browser-AI failover, only if `--ai` flag is set); any field it fills is tagged with the actual provider name (e.g. `"gemini"`) in `field_sources`
+6. **SerpAPI (paid Google search)** — fallback when DuckDuckGo fails/is blocked, only if `SERPAPI_KEY` is set
+7. **AI fallback** — Gemini API (with Ollama/Anthropic failover, only if `--ai` flag is set); Gemini uses live Google search-grounding for the lookup, and any field it fills is tagged with the actual provider name (e.g. `"gemini"`) in `field_sources`
 
 ---
 
@@ -428,6 +414,7 @@ UK-Data-Scrapper/
 │   ├── charities.py
 │   ├── cqc.py
 │   ├── duckduckgo.py
+│   ├── serpapi.py        ← paid Google-search fallback
 │   └── ai_enricher.py    ← AI contact fallback
 │
 ├── processing/
@@ -448,8 +435,7 @@ UK-Data-Scrapper/
 │   └── CRM_INTEGRATION.md ← Laravel + MariaDB integration guide
 │
 ├── utils/
-│   ├── ai_client.py   ← AI failover chain (browser + API providers)
-│   ├── browser_ai.py  ← ChatGPT/Gemini web UI automation + --login-ai
+│   ├── ai_client.py   ← AI failover chain (Gemini → Ollama → Anthropic)
 │   ├── retry.py       ← exponential backoff
 │   ├── proxy.py       ← optional proxy rotation
 │   └── ...
@@ -487,7 +473,6 @@ skipped automatically (no failed requests).
 
 **AI: "all providers in the chain failed"**
 - Gemini API: check `GEMINI_API_KEY` is valid (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) and has quota left
-- ChatGPT/Gemini browser (optional, if configured): run `python main.py --login-ai` again if a session expired; set `PLAYWRIGHT_HEADLESS=false` in `.env` to watch what the browser hits
 - Ollama: confirm the server is reachable (`curl http://103.207.85.46:11434/api/tags`) and the model is pulled (`ollama pull llama3.2`)
 - A provider that fails twice is skipped for the rest of the run — restart to retry it
 

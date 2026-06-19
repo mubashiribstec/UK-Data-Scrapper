@@ -31,22 +31,29 @@ _MAX_CONSECUTIVE_FAILURES = 2
 
 
 @retry(max_attempts=2, base_delay=1.5, max_delay=5.0)
-def _call_gemini(prompt: str, model: str, api_key: str, timeout: int) -> Optional[str]:
+def _call_gemini(prompt: str, model: str, api_key: str, timeout: int,
+                  use_search: bool = False) -> Optional[str]:
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 512,
+            "temperature": 0,
+            # Newer Gemini models ("thinking" models, e.g. behind the
+            # gemini-flash-latest alias) spend part of maxOutputTokens on
+            # internal reasoning before the visible answer. Disable it so
+            # the full budget goes to the JSON response we asked for.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    if use_search:
+        # Search-grounding: Gemini runs a live Google search before answering,
+        # instead of relying only on its training data.
+        payload["tools"] = [{"google_search": {}}]
+
     resp = requests.post(
         GEMINI_URL.format(model=model),
         headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": 512,
-                "temperature": 0,
-                # Newer Gemini models ("thinking" models, e.g. behind the
-                # gemini-flash-latest alias) spend part of maxOutputTokens on
-                # internal reasoning before the visible answer. Disable it so
-                # the full budget goes to the JSON response we asked for.
-                "thinkingConfig": {"thinkingBudget": 0},
-            },
-        },
+        json=payload,
         timeout=timeout,
     )
     if resp.status_code == 429:
@@ -117,16 +124,9 @@ def _call_anthropic(prompt: str, model: str, timeout: int) -> Optional[str]:
 def _build_chain(config) -> list[str]:
     """Provider order: forced provider first if set, then the rest by default priority.
 
-    Browser providers (ChatGPT / Gemini web, saved login sessions) come first
-    when available; API providers act as automatic failover.
+    API-only chain: Gemini → Ollama → Anthropic. No browser automation.
     """
-    from utils.browser_ai import browser_ai_ready, profile_dir_for
-
     chain = []
-    if browser_ai_ready(profile_dir_for("chatgpt", config)):
-        chain.append("chatgpt")
-    if browser_ai_ready(profile_dir_for("gemini_web", config)):
-        chain.append("gemini_web")
     if getattr(config, "gemini_api_key", ""):
         chain.append("gemini")
     if getattr(config, "ollama_base_url", ""):
@@ -142,13 +142,17 @@ def _build_chain(config) -> list[str]:
     return chain
 
 
-def ask_ai(prompt: str, config, timeout: int = 60) -> tuple[Optional[str], Optional[str]]:
+def ask_ai(prompt: str, config, timeout: int = 60,
+           use_search: bool = False) -> tuple[Optional[str], Optional[str]]:
     """Send a prompt down the provider chain, returning (response, provider_name).
 
     Counts one AI call per invocation regardless of how many providers were
     attempted. Returns (None, None) when every provider fails. The provider
     name (e.g. "gemini", "ollama") lets callers tag which fields were filled
     in by which AI service, instead of a generic "ai" label.
+
+    use_search enables Gemini's live Google-search grounding for this call
+    (ignored by providers that don't support it).
     """
     global _ai_call_counter
     with _lock:
@@ -165,12 +169,9 @@ def ask_ai(prompt: str, config, timeout: int = 60) -> tuple[Optional[str], Optio
             if provider in _dead_providers:
                 continue
         try:
-            if provider in ("chatgpt", "gemini_web"):
-                from utils.browser_ai import ask_browser_ai
-                # Browser round-trips are slow: page load + streaming answer
-                result = ask_browser_ai(prompt, config, provider, timeout=max(timeout, 180))
-            elif provider == "gemini":
-                result = _call_gemini(prompt, config.gemini_model, config.gemini_api_key, timeout)
+            if provider == "gemini":
+                result = _call_gemini(prompt, config.gemini_model, config.gemini_api_key,
+                                      timeout, use_search=use_search)
             elif provider == "ollama":
                 result = _call_ollama(prompt, getattr(config, "ai_model", "llama3.2"),
                                       config.ollama_base_url, timeout)

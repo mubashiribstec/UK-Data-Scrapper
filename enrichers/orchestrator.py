@@ -21,6 +21,7 @@ def _enrich_company(company: str, company_url: Optional[str], location: Optional
     from enrichers.charities import enrich_from_charities
     from enrichers.cqc import enrich_from_cqc
     from enrichers.duckduckgo import enrich_from_duckduckgo
+    from enrichers.serpapi import enrich_from_serpapi
     from enrichers.ai_enricher import enrich_with_ai
 
     collected_records = []
@@ -101,6 +102,21 @@ def _enrich_company(company: str, company_url: Optional[str], location: Optional
             logger.debug(f"  DuckDuckGo enricher found data for '{company}'")
     except Exception as e:
         logger.debug(f"DuckDuckGo enricher error for '{company}': {e}")
+
+    if _has_enough_data(merged):
+        return merged
+
+    # 5.5 SerpAPI (paid fallback — only when DuckDuckGo found nothing/is disabled)
+    if getattr(config, "serpapi_key", ""):
+        try:
+            result = enrich_from_serpapi(company, location=location, timeout=timeout,
+                                         api_key=config.serpapi_key)
+            if result:
+                collected_records.append(result)
+                merged = merge_contacts(collected_records, company)
+                logger.debug(f"  SerpAPI enricher found data for '{company}'")
+        except Exception as e:
+            logger.debug(f"SerpAPI enricher error for '{company}': {e}")
 
     if _has_enough_data(merged):
         return merged

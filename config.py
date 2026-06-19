@@ -40,13 +40,7 @@ class Config:
     # Source credentials / keys
     reed_api_key: str = ""              # free key from reed.co.uk/developers
     companies_house_api_key: str = ""   # free key from developer.company-information.service.gov.uk
-
-    # Browser AI (ChatGPT / Gemini web UI) saved login sessions
-    chatgpt_profile_dir: str = "./output/.browser/chatgpt"
-    gemini_web_profile_dir: str = "./output/.browser/gemini"
-    # Show the AI browser window (so you can solve a "verify you are human"
-    # check). Auto-enabled on demand when such a challenge blocks a headless run.
-    browser_ai_headful: bool = False
+    serpapi_key: str = ""               # paid, serpapi.com — fallback search when DuckDuckGo fails/is blocked
 
     # Proxies (optional, requests-based scrapers only — Reed API)
     proxies_file: str = ""
@@ -101,6 +95,8 @@ class Config:
             self.reed_api_key = os.getenv("REED_API_KEY")
         if os.getenv("COMPANIES_HOUSE_API_KEY"):
             self.companies_house_api_key = os.getenv("COMPANIES_HOUSE_API_KEY")
+        if os.getenv("SERPAPI_KEY"):
+            self.serpapi_key = os.getenv("SERPAPI_KEY")
         if os.getenv("PROXIES_FILE"):
             self.proxies_file = os.getenv("PROXIES_FILE")
         if os.getenv("PLAYWRIGHT_PROXY"):
@@ -111,8 +107,6 @@ class Config:
             self.sqlite_path = os.getenv("SQLITE_PATH")
         if os.getenv("PLAYWRIGHT_HEADLESS"):
             self.playwright_headless = os.getenv("PLAYWRIGHT_HEADLESS").lower() != "false"
-        if os.getenv("BROWSER_AI_HEADFUL"):
-            self.browser_ai_headful = os.getenv("BROWSER_AI_HEADFUL").lower() == "true"
         if os.getenv("ENRICH_CONTACTS"):
             self.enrich_contacts = os.getenv("ENRICH_CONTACTS").lower() == "true"
         if os.getenv("MYSQL_HOST"):

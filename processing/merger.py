@@ -81,7 +81,7 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
     # Contact person: first non-null priority order (job ad itself > website > CH > AI)
     source_priority = [
         "job_description", "website", "companies_house", "charities", "cqc", "duckduckgo",
-        "gemini", "chatgpt", "gemini_web", "ollama", "anthropic", "ai",
+        "serpapi", "gemini", "ollama", "anthropic", "ai",
     ]
     records_by_source = {r.enrichment_sources[0] if r.enrichment_sources else "unknown": r for r in records}
     for src in source_priority:
@@ -93,7 +93,7 @@ def merge_contacts(records: list[ContactRecord], company: str) -> ContactRecord:
     # Address: prefer Companies House > CQC > website
     for src in [
         "companies_house", "cqc", "charities", "website", "job_description", "duckduckgo",
-        "gemini", "chatgpt", "gemini_web", "ollama", "anthropic", "ai",
+        "serpapi", "gemini", "ollama", "anthropic", "ai",
     ]:
         if src in records_by_source and records_by_source[src].address:
             merged.address = records_by_source[src].address
