@@ -86,7 +86,7 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
     ai_parsed = 0
 
     for job in jobs:
-        if ai_parsed >= parse_limit:
+        if get_call_count(purpose="parse") >= parse_limit:
             logger.info(f"Description mining: AI parse budget ({parse_limit}) reached")
             break
         if not job.description:
@@ -103,7 +103,7 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
             company=job.company or "Unknown",
             description=job.description[:1500],
         )
-        raw, provider = ask_ai(prompt, config, timeout=60)
+        raw, provider = ask_ai(prompt, config, timeout=60, purpose="parse")
         ai_parsed += 1
         if not raw:
             continue
@@ -158,5 +158,5 @@ def parse_jobs(jobs: list[JobRecord], config) -> dict[str, ContactRecord]:
 
     if ai_parsed:
         logger.info(f"Description mining: AI parsed {ai_parsed} job ads "
-                    f"(total AI calls so far: {get_call_count()})")
+                    f"(parse calls so far: {get_call_count(purpose='parse')})")
     return seeds

@@ -40,7 +40,7 @@ def enrich_with_ai(
 ) -> Optional[ContactRecord]:
     global _logged_limit_reached
     call_limit = getattr(config, "ai_call_limit", 20) if config else 20
-    if get_call_count() >= call_limit:
+    if get_call_count(purpose="enrich") >= call_limit:
         if not _logged_limit_reached:
             logger.warning(
                 f"AI enricher: call limit ({call_limit}) reached — "
@@ -56,8 +56,8 @@ def enrich_with_ai(
         location=location or "United Kingdom",
     )
 
-    logger.info(f"AI enricher: looking up '{company}' (call #{get_call_count() + 1})")
-    raw_response, provider = ask_ai(prompt, config, timeout=60, use_search=True)
+    logger.info(f"AI enricher: looking up '{company}' (call #{get_call_count(purpose='enrich') + 1})")
+    raw_response, provider = ask_ai(prompt, config, timeout=60, use_search=True, purpose="enrich")
     if not raw_response:
         return None
 

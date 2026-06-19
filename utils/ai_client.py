@@ -21,9 +21,14 @@ logger = logging.getLogger(__name__)
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 _lock = threading.Lock()
-_ai_call_counter = 0
+# Separate budgets per caller: description-parsing (Stage 3b) and contact
+# enrichment (Stage 4) each have their own limit and must not starve each other.
+_ai_call_counters: dict[str, int] = {"parse": 0, "enrich": 0}
 _provider_failures: dict[str, int] = {}
 _dead_providers: set[str] = set()
+# Ollama tag resolution is exact-match and identical for every call in a run,
+# so resolve a requested model name to a pulled tag once and reuse it.
+_ollama_resolved: dict[tuple[str, str], str] = {}
 
 # A provider is skipped for the rest of the run after this many consecutive
 # hard failures, so 50 jobs don't each wait out the same quota error.
@@ -110,9 +115,16 @@ def _resolve_ollama_model(requested: str, available: list) -> Optional[str]:
 @retry(max_attempts=2, base_delay=1.5, max_delay=5.0)
 def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Optional[str]:
     base = base_url.rstrip("/")
+
+    # Use a cached resolution from an earlier call in this run, if any, so we
+    # don't pay for the 404 round trip on every single call.
+    with _lock:
+        cached_resolved = _ollama_resolved.get((model, base))
+    effective_model = cached_resolved or model
+
     resp = requests.post(
         f"{base}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False},
+        json={"model": effective_model, "prompt": prompt, "stream": False},
         timeout=timeout,
     )
     if resp.status_code == 404:
@@ -123,6 +135,8 @@ def _call_ollama(prompt: str, model: str, base_url: str, timeout: int) -> Option
         resolved = _resolve_ollama_model(model, available or [])
         if resolved and resolved != model:
             logger.info(f"Ollama: model '{model}' not found, using pulled tag '{resolved}'")
+            with _lock:
+                _ollama_resolved[(model, base)] = resolved
             resp = requests.post(
                 f"{base}/api/generate",
                 json={"model": resolved, "prompt": prompt, "stream": False},
@@ -179,7 +193,7 @@ def _build_chain(config) -> list[str]:
 
 
 def ask_ai(prompt: str, config, timeout: int = 60,
-           use_search: bool = False) -> tuple[Optional[str], Optional[str]]:
+           use_search: bool = False, purpose: str = "enrich") -> tuple[Optional[str], Optional[str]]:
     """Send a prompt down the provider chain, returning (response, provider_name).
 
     Counts one AI call per invocation regardless of how many providers were
@@ -189,11 +203,14 @@ def ask_ai(prompt: str, config, timeout: int = 60,
 
     use_search enables Gemini's live Google-search grounding for this call
     (ignored by providers that don't support it).
+
+    purpose tags which budget this call counts against ("parse" for
+    description mining, "enrich" for contact-lookup fallback) so the two
+    stages' call limits stay independent instead of sharing one counter.
     """
-    global _ai_call_counter
     with _lock:
-        _ai_call_counter += 1
-        call_no = _ai_call_counter
+        _ai_call_counters[purpose] = _ai_call_counters.get(purpose, 0) + 1
+        call_no = _ai_call_counters[purpose]
 
     chain = _build_chain(config)
     if not chain:
@@ -262,13 +279,16 @@ def parse_ai_json(text: str) -> Optional[dict]:
 
 
 def reset_counter():
-    global _ai_call_counter
     with _lock:
-        _ai_call_counter = 0
+        for key in _ai_call_counters:
+            _ai_call_counters[key] = 0
         _provider_failures.clear()
         _dead_providers.clear()
+        _ollama_resolved.clear()
 
 
-def get_call_count() -> int:
+def get_call_count(purpose: Optional[str] = None) -> int:
     with _lock:
-        return _ai_call_counter
+        if purpose is not None:
+            return _ai_call_counters.get(purpose, 0)
+        return sum(_ai_call_counters.values())

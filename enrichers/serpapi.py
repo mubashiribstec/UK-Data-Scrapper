@@ -69,6 +69,11 @@ def enrich_from_serpapi(
     location_hint = f" {location}" if location else " UK"
     query = f'"{company}" contact phone email{location_hint}'
 
+    # SerpAPI's own round trip (search + Google backend) regularly needs more
+    # than the generic enrichment_timeout (10s default), which produced
+    # frequent read-timeouts. Give it a sturdier floor independent of that.
+    search_timeout = max(timeout, 15)
+
     try:
         resp = requests.get(
             SERPAPI_URL,
@@ -79,7 +84,7 @@ def enrich_from_serpapi(
                 "gl": "uk",
                 "hl": "en",
             },
-            timeout=timeout,
+            timeout=search_timeout,
         )
         if resp.status_code == 401:
             logger.warning("SerpAPI: API key invalid or unauthorised (HTTP 401)")
