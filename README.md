@@ -160,6 +160,7 @@ Enrichment & AI:
 Sessions & network:
   --login-ai                  One-time ChatGPT/Gemini browser login (saved + reused)
   --proxies PATH              Proxy list file for requests-based scrapers (Reed)
+  --browser-proxy URL         Residential proxy for the Indeed browser (avoids bot blocks)
 
 Other:
   --resume                    Skip jobs already saved in a previous run
@@ -315,6 +316,10 @@ For each unique company, the scraper tries these sources in order, stopping when
 
 ## Proxies (optional)
 
+There are two separate proxy paths, because the two scrapers use different HTTP stacks:
+
+**1. Requests-based scrapers (Reed API) — `--proxies` / `PROXIES_FILE`**
+
 Create a text file with one proxy per line:
 
 ```
@@ -322,7 +327,19 @@ http://user:pass@host:port
 http://other-host:port
 ```
 
-Run with `python main.py --proxies proxies.txt` (or set `PROXIES_FILE=` in `.env`). Proxies apply to the requests-based Reed scraper and rotate automatically after a 403. The browser-based Indeed scraper doesn't use proxies — rotating IPs would conflict with the saved login session.
+Run with `python main.py --proxies proxies.txt` (or set `PROXIES_FILE=` in `.env`). These rotate automatically after a 403.
+
+**2. Browser scraper (Indeed) — `--browser-proxy` / `PLAYWRIGHT_PROXY`**
+
+Indeed is browser-based and is the source most likely to hit bot blocks. Route it through a **residential proxy** so each request looks like an ordinary home/mobile IP:
+
+```bash
+python main.py --sources indeed --browser-proxy "http://user:pass@gb.provider.com:7777"
+```
+
+Or set `PLAYWRIGHT_PROXY=` in your local `.env`. Use a single auto-rotating gateway URL — the provider rotates the exit IP server-side per request, so it doesn't conflict with the saved Indeed login profile. Credentials are masked in logs (only `host:port` is shown).
+
+> **Note:** Reliable residential proxies are a **paid** service (billed per GB) — Bright Data, Oxylabs, Smartproxy/Decodo, IPRoyal, etc. "Free proxy lists" are datacenter IPs that Indeed blocks on sight. Keep the gateway URL in your local, gitignored `.env` — never commit it.
 
 ---
 

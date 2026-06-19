@@ -98,7 +98,12 @@ OUTPUT
     )
     parser.add_argument(
         "--proxies", metavar="PATH", default=None,
-        help="Path to a proxies file (one per line) for requests-based scrapers",
+        help="Path to a proxies file (one per line) for requests-based scrapers (Reed)",
+    )
+    parser.add_argument(
+        "--browser-proxy", metavar="URL", default=None,
+        help="Proxy URL for the Indeed browser, e.g. http://user:pass@host:port "
+             "(residential recommended to avoid bot blocks). Overrides PLAYWRIGHT_PROXY",
     )
     parser.add_argument(
         "--format", nargs="+",
@@ -175,6 +180,8 @@ def main():
         config.browser_ai_headful = True
     if args.proxies:
         config.proxies_file = args.proxies
+    if args.browser_proxy:
+        config.playwright_proxy = args.browser_proxy
 
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 

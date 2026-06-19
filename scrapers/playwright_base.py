@@ -7,6 +7,7 @@ import logging
 
 from scrapers.base import BaseScraper
 from utils.user_agents import get_random_user_agent
+from utils.proxy import playwright_proxy_dict
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,14 @@ class PlaywrightScraper(BaseScraper):
             "--disable-blink-features=AutomationControlled",
         ]
 
+        # Optional residential proxy for the browser — applied once at launch so
+        # every context inherits it. The gateway rotates the exit IP server-side.
+        proxy = playwright_proxy_dict(getattr(self.config, "playwright_proxy", ""))
+        if proxy:
+            logger.info(
+                f"{self.__class__.__name__}: routing browser via proxy {proxy['server']}"
+            )
+
         try:
             if user_data_dir:
                 from pathlib import Path
@@ -78,6 +87,7 @@ class PlaywrightScraper(BaseScraper):
                     user_data_dir,
                     headless=self.config.playwright_headless,
                     args=launch_args,
+                    proxy=proxy,
                     user_agent=PERSISTENT_UA,
                     viewport={"width": 1366, "height": 768},
                     locale="en-GB",
@@ -88,6 +98,7 @@ class PlaywrightScraper(BaseScraper):
                 self._browser = self._playwright.chromium.launch(
                     headless=self.config.playwright_headless,
                     args=launch_args,
+                    proxy=proxy,
                 )
                 logger.info(f"{self.__class__.__name__}: Playwright browser launched")
         except Exception:

@@ -48,8 +48,11 @@ class Config:
     # check). Auto-enabled on demand when such a challenge blocks a headless run.
     browser_ai_headful: bool = False
 
-    # Proxies (optional, requests-based scrapers only)
+    # Proxies (optional, requests-based scrapers only — Reed API)
     proxies_file: str = ""
+    # Proxy URL for the Indeed browser (Playwright), e.g.
+    # http://user:pass@host:port — residential recommended to avoid bot blocks
+    playwright_proxy: str = ""
 
     # Output
     output_dir: str = "./output"
@@ -100,6 +103,8 @@ class Config:
             self.companies_house_api_key = os.getenv("COMPANIES_HOUSE_API_KEY")
         if os.getenv("PROXIES_FILE"):
             self.proxies_file = os.getenv("PROXIES_FILE")
+        if os.getenv("PLAYWRIGHT_PROXY"):
+            self.playwright_proxy = os.getenv("PLAYWRIGHT_PROXY")
         if os.getenv("OUTPUT_DIR"):
             self.output_dir = os.getenv("OUTPUT_DIR")
         if os.getenv("SQLITE_PATH"):

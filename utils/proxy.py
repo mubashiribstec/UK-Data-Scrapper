@@ -1,11 +1,16 @@
 import logging
 import random
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# Optional proxy rotation — disabled unless a proxies file is loaded.
-# Applies to requests-based scrapers (NHS, Reed). Playwright scrapers are
-# excluded: rotating proxies conflicts with the persistent Indeed login profile.
+# Two separate proxy paths:
+#  - The functions below rotate proxies from a file across the requests-based
+#    scrapers (Reed API), disabled unless a proxies file is loaded.
+#  - The Playwright/Indeed browser is proxied separately via
+#    `playwright_proxy_dict`, applied once at browser launch (a single
+#    auto-rotating residential gateway, so it doesn't conflict with the
+#    persistent Indeed profile).
 
 _proxy_list: list = []
 
@@ -42,3 +47,28 @@ def rotate_proxy(session) -> None:
         return
     session.proxies.clear()
     apply_proxy(session)
+
+
+def playwright_proxy_dict(url: str) -> dict | None:
+    """Parse a proxy URL (scheme://user:pass@host:port) into Playwright's
+    proxy shape: {"server": "scheme://host:port", "username", "password"}.
+
+    Returns None for empty/blank input so it can be passed straight to
+    Playwright's `proxy=` arg (which treats None as "no proxy").
+    """
+    if not url or not url.strip():
+        return None
+    parsed = urlparse(url.strip())
+    if not parsed.hostname:
+        logger.warning(f"Ignoring malformed PLAYWRIGHT_PROXY (no host): {url}")
+        return None
+    scheme = parsed.scheme or "http"
+    server = f"{scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    proxy = {"server": server}
+    if parsed.username:
+        proxy["username"] = parsed.username
+    if parsed.password:
+        proxy["password"] = parsed.password
+    return proxy
