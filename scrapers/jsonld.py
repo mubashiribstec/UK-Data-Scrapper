@@ -1,7 +1,8 @@
-"""Shared schema.org JobPosting (JSON-LD) extraction.
+"""Shared schema.org JobPosting (JSON-LD) extraction and HTML helpers.
 
-Used by Reed (HTML fallback), TotalJobs and CV-Library — all three embed
-JSON-LD job data for SEO, which is far more stable than CSS selectors.
+`strip_html` is used by Reed (API description cleanup) and Indeed (mosaic
+snippet cleanup). The JobPosting parsers remain for any source that embeds
+schema.org JSON-LD job data for SEO, which is far more stable than CSS selectors.
 """
 
 import json

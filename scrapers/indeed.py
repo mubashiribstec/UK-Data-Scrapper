@@ -8,6 +8,7 @@ from typing import Optional
 
 from scrapers.base import JobRecord
 from scrapers.playwright_base import PlaywrightScraper
+from scrapers.jsonld import strip_html
 
 logger = logging.getLogger(__name__)
 
@@ -81,19 +82,29 @@ class IndeedScraper(PlaywrightScraper):
                     results.append(card_data)
                     jobs_in_context += 1
 
-                # Fetch descriptions for top 20 only
+                # Upgrade the snippet-based descriptions with the full job-page
+                # text for the top results only. Hitting many /viewjob pages in a
+                # row is the strongest bot signal, so we fetch a modest number,
+                # pace them out, and — if blocked — stop while keeping every job's
+                # snippet description intact.
                 if offset == 0:
-                    for i, record in enumerate(results[:20]):
-                        if not record.description and record.job_id:
-                            try:
-                                desc = self._fetch_description(page, record.job_id)
+                    for i, record in enumerate(results[:12]):
+                        if not record.job_id:
+                            continue
+                        try:
+                            desc = self._fetch_description(page, record.job_id)
+                            if desc:
                                 record.description = desc
-                                jobs_in_context += 1
-                                if self._is_blocked(page):
-                                    logger.warning("Indeed: blocked during description fetch")
-                                    break
-                            except Exception as e:
-                                logger.debug(f"Indeed: description fetch failed for {record.job_id}: {e}")
+                            jobs_in_context += 1
+                            if self._is_blocked(page):
+                                logger.warning(
+                                    "Indeed: blocked during description fetch — "
+                                    "keeping snippet descriptions for remaining jobs"
+                                )
+                                break
+                            time.sleep(random.uniform(2, 4))
+                        except Exception as e:
+                            logger.debug(f"Indeed: description fetch failed for {record.job_id}: {e}")
 
                 offset += 10
                 time.sleep(random.uniform(2, 5))
@@ -175,6 +186,12 @@ class IndeedScraper(PlaywrightScraper):
                 job_types = item.get("jobTypes") or []
                 job_type = ", ".join(str(t).lower() for t in job_types) if job_types else None
 
+                # Baseline description from the embedded snippet — no extra page
+                # load needed, so it survives even if Indeed blocks the per-job
+                # description fetch below. The full fetch upgrades this when it works.
+                snippet_html = item.get("snippet") or ""
+                description = strip_html(snippet_html).strip() or None
+
                 link = item.get("viewJobLink") or ""
                 if link.startswith("/"):
                     apply_url = f"https://uk.indeed.com{link}"
@@ -198,6 +215,7 @@ class IndeedScraper(PlaywrightScraper):
                     job_type=job_type,
                     posted_at=posted_at,
                     apply_url=apply_url,
+                    description=description,
                     scraped_at=datetime.utcnow().isoformat() + "Z",
                 ))
             except Exception as e:
