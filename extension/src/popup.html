@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>UK Data Scrapper Capture</title>
+  <style>
+    body { font: 13px -apple-system, Segoe UI, Arial, sans-serif; width: 280px; margin: 0; padding: 12px; color: #1a1a1a; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    .count { font-size: 28px; font-weight: 600; margin: 4px 0; }
+    .per-source { font-size: 12px; color: #555; margin-bottom: 10px; }
+    .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; }
+    label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    input[type="text"] { width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 12px; margin-top: 4px; }
+    button { width: 100%; padding: 7px; margin: 4px 0; font-size: 12px; border: 1px solid #ccc; border-radius: 4px; background: #f7f7f7; cursor: pointer; }
+    button:hover { background: #ececec; }
+    button.primary { background: #0a7d2c; color: white; border-color: #0a7d2c; }
+    button.primary:hover { background: #086623; }
+    .status { font-size: 11px; margin-top: 6px; min-height: 14px; }
+    .status.ok { color: #0a7d2c; }
+    .status.err { color: #c02020; }
+    .divider { border-top: 1px solid #e2e2e2; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>UK Data Scrapper</h1>
+  <div class="count" id="count">0</div>
+  <div class="per-source" id="perSource">No jobs captured yet</div>
+
+  <div class="divider"></div>
+
+  <label>
+    <input type="checkbox" id="autoSend" />
+    Auto-send to receiver as I browse
+  </label>
+  <input type="text" id="receiverUrl" placeholder="http://127.0.0.1:8765" />
+
+  <div class="divider"></div>
+
+  <button id="downloadBtn">Download JSON (--import-json)</button>
+  <button id="sendNowBtn">Send all to receiver now</button>
+  <button id="runBtn" class="primary">Run pipeline now</button>
+  <button id="clearBtn">Clear captured jobs</button>
+
+  <div class="status" id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

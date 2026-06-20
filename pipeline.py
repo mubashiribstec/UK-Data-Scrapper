@@ -2,6 +2,7 @@ import logging
 import re
 import signal
 import sys
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -37,6 +38,47 @@ def _run_scraper(scraper_class, config, sources_filter):
     except Exception as e:
         logger.error(f"{scraper_class.__name__} failed: {e}")
         return []
+
+
+def load_jobs_file(path: str) -> list:
+    """Load JobRecords from an extension/import JSON file.
+
+    Accepts either the export envelope {"jobs": [...]} or a bare list of job
+    objects. Rebuilds each via JobRecord.from_dict (ignoring any nested
+    "contact" block). Skips entries missing a usable title/job_id.
+    """
+    import json
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    raw = data.get("jobs", []) if isinstance(data, dict) else data
+    jobs = []
+    for item in raw or []:
+        try:
+            job = JobRecord.from_dict(item)
+        except Exception as e:
+            logger.warning(f"Skipping malformed imported job: {e}")
+            continue
+        if not job.title or not job.job_id:
+            logger.warning(f"Skipping imported job with no title/job_id: {item!r:.80}")
+            continue
+        jobs.append(job)
+    logger.info(f"Loaded {len(jobs)} jobs from {path}")
+    return jobs
+
+
+def import_and_run(config: Config, path: str, dry_run: bool = False) -> dict:
+    """Load jobs from a JSON file and run the full pipeline on them.
+
+    Shared entry point for `main.py --import-json` and the local receiver
+    server — both skip Stage 1 (scraping) and feed externally-captured jobs
+    (e.g. from the browser extension) through dedup → clean → mine → enrich →
+    export.
+    """
+    jobs = load_jobs_file(path)
+    if not jobs:
+        logger.warning(f"No usable jobs in {path}")
+        return {"jobs": [], "contacts": {}, "run_id": None, "errors": 0}
+    return run_pipeline(config, imported_jobs=jobs, dry_run=dry_run)
 
 
 def _filter_since(jobs: list, since_days: int) -> list:
@@ -101,6 +143,7 @@ def run_pipeline(
     dry_run: bool = False,
     resume: bool = False,
     since_days: int = None,
+    imported_jobs: list = None,
 ) -> dict:
     global _partial_jobs, _partial_contacts, _interrupted
     _interrupted = False
@@ -112,7 +155,11 @@ def run_pipeline(
         from utils.proxy import load_proxies
         load_proxies(config.proxies_file)
 
-    signal.signal(signal.SIGINT, _handle_interrupt)
+    # Partial-save on Ctrl-C, but only when running on the main thread — the
+    # receiver server runs the pipeline on a worker thread where signal
+    # registration would raise.
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, _handle_interrupt)
 
     run_id = str(uuid.uuid4())
     started_at = datetime.utcnow().isoformat() + "Z"
@@ -123,37 +170,47 @@ def run_pipeline(
     logger.info(f"Locations: {config.locations}")
     logger.info(f"Max results per keyword: {config.max_results_per_keyword}")
 
-    # Import scrapers
-    from scrapers.reed import ReedScraper
-    from scrapers.indeed import IndeedScraper
-
-    scraper_classes = [ReedScraper, IndeedScraper]
-
-    # Stage 1: Run scrapers in parallel
-    logger.info("Stage 1: Running scrapers in parallel...")
     all_raw_jobs = []
     per_source_raw: dict[str, int] = {}
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(_run_scraper, cls, config, sources_filter): cls.__name__
-            for cls in scraper_classes
-        }
-        for future in as_completed(futures):
-            if _interrupted:
-                break
-            name = futures[future]
-            try:
-                batch = future.result(timeout=600)
-                all_raw_jobs.extend(batch)
-                if batch:
-                    per_source_raw[batch[0].source] = per_source_raw.get(batch[0].source, 0) + len(batch)
-                logger.info(f"{name}: returned {len(batch)} raw jobs")
-            except Exception as e:
-                logger.error(f"{name} future failed: {e}")
-                errors += 1
+    if imported_jobs is not None:
+        # Stage 1 skipped: jobs supplied externally (browser extension / --import-json).
+        # Everything downstream (dedup → clean → mine → enrich → export) is unchanged.
+        all_raw_jobs = list(imported_jobs)
+        for job in all_raw_jobs:
+            per_source_raw[job.source] = per_source_raw.get(job.source, 0) + 1
+        logger.info(f"Stage 1 skipped: {len(all_raw_jobs)} jobs imported "
+                    f"(sources: {per_source_raw})")
+    else:
+        # Import scrapers
+        from scrapers.reed import ReedScraper
+        from scrapers.indeed import IndeedScraper
 
-    logger.info(f"Stage 1 complete: {len(all_raw_jobs)} raw jobs collected")
+        scraper_classes = [ReedScraper, IndeedScraper]
+
+        # Stage 1: Run scrapers in parallel
+        logger.info("Stage 1: Running scrapers in parallel...")
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(_run_scraper, cls, config, sources_filter): cls.__name__
+                for cls in scraper_classes
+            }
+            for future in as_completed(futures):
+                if _interrupted:
+                    break
+                name = futures[future]
+                try:
+                    batch = future.result(timeout=600)
+                    all_raw_jobs.extend(batch)
+                    if batch:
+                        per_source_raw[batch[0].source] = per_source_raw.get(batch[0].source, 0) + len(batch)
+                    logger.info(f"{name}: returned {len(batch)} raw jobs")
+                except Exception as e:
+                    logger.error(f"{name} future failed: {e}")
+                    errors += 1
+
+        logger.info(f"Stage 1 complete: {len(all_raw_jobs)} raw jobs collected")
 
     if not all_raw_jobs:
         logger.warning("No jobs collected. Check network connectivity and scraper logs.")

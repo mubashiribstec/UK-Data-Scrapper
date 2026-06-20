@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
+from datetime import datetime
 from typing import Optional
 import logging
 
@@ -58,6 +59,41 @@ class JobRecord:
             "scraped_at": self.scraped_at,
             "field_sources": self.field_sources,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "JobRecord":
+        """Rebuild a JobRecord from import JSON (browser extension / --import-json).
+
+        Maps only known dataclass fields, ignoring extras such as a nested
+        "contact" block from a re-imported export. Coerces salary numbers to
+        float and defaults required/timestamp fields when absent so jobs from
+        an external source flow through the normal pipeline.
+        """
+        known = {f.name for f in dataclass_fields(cls)}
+        kwargs = {k: v for k, v in (data or {}).items() if k in known}
+
+        kwargs["job_id"] = str(kwargs.get("job_id") or "").strip()
+        kwargs["source"] = (kwargs.get("source") or "extension").strip()
+        kwargs["title"] = (kwargs.get("title") or "").strip()
+
+        for num_field in ("salary_min", "salary_max"):
+            if kwargs.get(num_field) not in (None, ""):
+                try:
+                    kwargs[num_field] = float(kwargs[num_field])
+                except (TypeError, ValueError):
+                    kwargs[num_field] = None
+            else:
+                kwargs.pop(num_field, None)
+
+        for list_field in ("requirements", "benefits", "sources"):
+            val = kwargs.get(list_field)
+            if val is not None and not isinstance(val, list):
+                kwargs.pop(list_field, None)
+
+        if not kwargs.get("scraped_at"):
+            kwargs["scraped_at"] = datetime.utcnow().isoformat() + "Z"
+
+        return cls(**kwargs)
 
 
 class BaseScraper(ABC):

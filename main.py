@@ -44,6 +44,9 @@ COMMON RECIPES
   # Resume last run — skip already-seen jobs:
   python main.py --resume
 
+  # Import jobs captured by the browser extension (no scraping):
+  python main.py --import-json output/extension_inbox.json --ai
+
 SOURCES
 -------
   indeed     Indeed UK via browser (no login needed) — primary job source
@@ -128,6 +131,11 @@ OUTPUT
         help="Skip jobs already seen in a previous run (requires SQLite in output dir)",
     )
     parser.add_argument(
+        "--import-json", metavar="PATH", default=None,
+        help="Skip scraping and load jobs from a JSON file (e.g. exported by the "
+             "browser extension), then dedup/clean/enrich/export them",
+    )
+    parser.add_argument(
         "--headful", action="store_true",
         help="Show the browser window when scraping Indeed (useful for debugging)",
     )
@@ -192,16 +200,20 @@ def main():
         f"enrich={config.enrich_contacts}  formats={config.export_formats}"
     )
 
-    from pipeline import run_pipeline
+    from pipeline import run_pipeline, import_and_run
 
     try:
-        result = run_pipeline(
-            config=config,
-            sources_filter=args.sources,
-            dry_run=args.dry_run,
-            resume=args.resume,
-            since_days=args.since,
-        )
+        if args.import_json:
+            logger.info(f"Importing jobs from {args.import_json} (scraping skipped)")
+            result = import_and_run(config, args.import_json, dry_run=args.dry_run)
+        else:
+            result = run_pipeline(
+                config=config,
+                sources_filter=args.sources,
+                dry_run=args.dry_run,
+                resume=args.resume,
+                since_days=args.since,
+            )
     except KeyboardInterrupt:
         logger.warning("Interrupted — partial results may have been saved to output/")
         sys.exit(1)

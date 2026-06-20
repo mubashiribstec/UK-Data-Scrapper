@@ -58,6 +58,12 @@ class Config:
     export_formats: list = field(default_factory=lambda: ["json"])
     sqlite_path: str = "./output/scraper.db"
 
+    # Browser-extension receiver (local server that accepts jobs scraped in a
+    # real browser and feeds them into the pipeline)
+    receiver_host: str = "127.0.0.1"
+    receiver_port: int = 8765
+    extension_inbox: str = "./output/extension_inbox.json"
+
     # Rate limiting per domain
     domain_delays: dict = field(default_factory=lambda: {
         "uk.indeed.com": 4.0,
@@ -110,6 +116,12 @@ class Config:
             self.output_dir = os.getenv("OUTPUT_DIR")
         if os.getenv("SQLITE_PATH"):
             self.sqlite_path = os.getenv("SQLITE_PATH")
+        if os.getenv("RECEIVER_HOST"):
+            self.receiver_host = os.getenv("RECEIVER_HOST")
+        if os.getenv("RECEIVER_PORT"):
+            self.receiver_port = int(os.getenv("RECEIVER_PORT"))
+        if os.getenv("EXTENSION_INBOX"):
+            self.extension_inbox = os.getenv("EXTENSION_INBOX")
         if os.getenv("PLAYWRIGHT_HEADLESS"):
             self.playwright_headless = os.getenv("PLAYWRIGHT_HEADLESS").lower() != "false"
         if os.getenv("ENRICH_CONTACTS"):
