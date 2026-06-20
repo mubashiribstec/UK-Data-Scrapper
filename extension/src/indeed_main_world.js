@@ -26,7 +26,9 @@
     const key = results.map((r) => r.jobkey).join(",");
     if (key === lastSentKey) return;
     lastSentKey = key;
-    window.postMessage({ source: SOURCE_TAG, results }, "*");
+    // Target this page's own origin, not "*" — keeps the relay from being
+    // readable/spoofable by any other frame/origin sharing the message bus.
+    window.postMessage({ source: SOURCE_TAG, results }, window.location.origin);
   }
 
   function check() {
@@ -38,5 +40,10 @@
   // without a full navigation; a light observer catches that.
   const observer = new MutationObserver(() => check());
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  setInterval(check, 2000);
+  const intervalId = setInterval(check, 2000);
+
+  window.addEventListener("pagehide", () => {
+    observer.disconnect();
+    clearInterval(intervalId);
+  });
 })();

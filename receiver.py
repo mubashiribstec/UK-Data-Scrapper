@@ -21,10 +21,21 @@ Endpoints (all return permissive CORS headers — localhost only):
 import argparse
 import json
 import logging
+import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# Refuse request bodies above this size — the inbox is meant for browsing
+# sessions' worth of job cards, not arbitrary uploads.
+MAX_BODY_BYTES = 25 * 1024 * 1024
+
+# Origins allowed to call this server. It binds to localhost, but any web
+# page in the browser can still issue a same-machine fetch() to it, so CORS
+# must not be left wide open ("*") — restrict to the extension itself and
+# the loopback origins the popup/receiver normally run from.
+_ALLOWED_ORIGIN_PREFIXES = ("http://localhost:", "http://127.0.0.1:")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -61,8 +72,12 @@ def _load_inbox() -> list:
 def _save_inbox(jobs: list) -> None:
     path = _inbox_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    # Write to a temp file and rename into place so a crash mid-write (or a
+    # concurrent reader) never sees a truncated/corrupt inbox file.
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump({"jobs": jobs}, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
 
 
 def _merge_jobs(incoming: list) -> tuple[int, int]:
@@ -111,8 +126,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         logger.debug("HTTP " + fmt % args)
 
+    def _allowed_origin(self):
+        origin = self.headers.get("Origin", "")
+        if origin.startswith("chrome-extension://") or origin.startswith(_ALLOWED_ORIGIN_PREFIXES):
+            return origin
+        return None
+
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._allowed_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -129,6 +152,8 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         if not length:
             return None
+        if length > MAX_BODY_BYTES:
+            raise ValueError(f"request body too large ({length} bytes, max {MAX_BODY_BYTES})")
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8"))
 
@@ -176,6 +201,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
         except json.JSONDecodeError as e:
             self._send(400, {"error": f"invalid JSON: {e}"})
+        except ValueError as e:
+            self._send(413, {"error": str(e)})
         except Exception as e:
             logger.error(f"Request failed: {e}", exc_info=True)
             self._send(500, {"error": str(e)})

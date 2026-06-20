@@ -4,11 +4,12 @@
 
 // Strip tags + collapse whitespace — mirrors scrapers/jsonld.py's strip_html
 // closely enough for description text, which is all we need client-side.
+// Parsed via DOMParser (not innerHTML on a live element) so inline event
+// handlers / resource loads in untrusted job-description HTML never fire.
 function stripHtml(html) {
   if (!html) return null;
-  const div = document.createElement("div");
-  div.innerHTML = html;
-  const text = (div.textContent || div.innerText || "").replace(/\s+/g, " ").trim();
+  const doc = new DOMParser().parseFromString(String(html), "text/html");
+  const text = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
   return text || null;
 }
 
@@ -48,7 +49,8 @@ function buildJobRecord({
 // (source, job_id) in chrome.storage.local and tracks the badge count.
 function sendJob(job) {
   if (!job || !job.job_id || !job.title) return;
-  chrome.runtime.sendMessage({ type: "JOB_CAPTURED", job }).catch(() => {});
+  chrome.runtime.sendMessage({ type: "JOB_CAPTURED", job })
+    .catch((e) => console.warn("uk-data-scrapper: failed to send job", e));
 }
 
 function sendJobs(jobs) {

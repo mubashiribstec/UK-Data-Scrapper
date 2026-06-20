@@ -55,12 +55,12 @@ function mapMosaicItem(item) {
     job_type: jobType,
     posted_at: postedAt,
     apply_url: applyUrl,
-    description: stripHtml(item.snippet || ""),
+    description: (stripHtml(item.snippet || "") || "").slice(0, 8000) || null,
   });
 }
 
 window.addEventListener("message", (event) => {
-  if (event.source !== window) return;
+  if (event.source !== window || event.origin !== window.location.origin) return;
   const msg = event.data;
   if (!msg || msg.source !== SOURCE_TAG || !Array.isArray(msg.results)) return;
   const jobs = msg.results.map(mapMosaicItem).filter(Boolean);
@@ -161,3 +161,4 @@ const runDomFallback = debounce(() => {
 runDomFallback();
 const domObserver = new MutationObserver(runDomFallback);
 domObserver.observe(document.documentElement, { childList: true, subtree: true });
+window.addEventListener("pagehide", () => domObserver.disconnect());

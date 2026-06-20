@@ -51,6 +51,8 @@ def load_jobs_file(path: str) -> list:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     raw = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        raw = []
     jobs = []
     for item in raw or []:
         try:

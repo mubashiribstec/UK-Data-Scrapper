@@ -25,8 +25,47 @@ function parseSalaryFromJsonLd(baseSalary) {
   return { text, min, max, period };
 }
 
-function extractJsonLdJobPosting() {
+function mapJsonLdJobPosting(item) {
+  const jobId = jobIdFromUrl(item.url || window.location.href) || jobIdFromUrl(window.location.href);
+  if (!jobId) return null;
+
+  const salary = parseSalaryFromJsonLd(item.baseSalary);
+  const locationObj = item.jobLocation && item.jobLocation.address;
+  const location = locationObj
+    ? [locationObj.addressLocality, locationObj.postalCode].filter(Boolean).join(", ")
+    : null;
+
+  let jobType = null;
+  if (item.employmentType) {
+    const types = Array.isArray(item.employmentType) ? item.employmentType : [item.employmentType];
+    jobType = types.map((t) => String(t).toLowerCase().replace("_", "-")).join(", ");
+  }
+
+  return buildJobRecord({
+    job_id: jobId,
+    source: "reed",
+    title: item.title || "Unknown",
+    company: item.hiringOrganization ? item.hiringOrganization.name : null,
+    company_url: item.hiringOrganization ? item.hiringOrganization.sameAs || null : null,
+    location,
+    location_postcode: locationObj ? locationObj.postalCode || null : null,
+    salary_text: salary.text,
+    salary_min: salary.min,
+    salary_max: salary.max,
+    salary_period: salary.period,
+    job_type: jobType,
+    description: stripHtml(item.description || ""),
+    posted_at: item.datePosted || null,
+    expires_at: item.validThrough || null,
+    apply_url: item.url || window.location.href,
+  });
+}
+
+// Returns every JobPosting found across all ld+json blocks on the page —
+// some Reed pages (e.g. "similar jobs" rails) embed more than one.
+function extractJsonLdJobPostings() {
   const scripts = document.querySelectorAll("script[type='application/ld+json']");
+  const jobs = [];
   for (const script of scripts) {
     let data;
     try {
@@ -37,43 +76,11 @@ function extractJsonLdJobPosting() {
     const candidates = Array.isArray(data) ? data : [data];
     for (const item of candidates) {
       if (!item || item["@type"] !== "JobPosting") continue;
-
-      const jobId = jobIdFromUrl(item.url || window.location.href) || jobIdFromUrl(window.location.href);
-      if (!jobId) continue;
-
-      const salary = parseSalaryFromJsonLd(item.baseSalary);
-      const locationObj = item.jobLocation && item.jobLocation.address;
-      const location = locationObj
-        ? [locationObj.addressLocality, locationObj.postalCode].filter(Boolean).join(", ")
-        : null;
-
-      let jobType = null;
-      if (item.employmentType) {
-        const types = Array.isArray(item.employmentType) ? item.employmentType : [item.employmentType];
-        jobType = types.map((t) => String(t).toLowerCase().replace("_", "-")).join(", ");
-      }
-
-      return buildJobRecord({
-        job_id: jobId,
-        source: "reed",
-        title: item.title || "Unknown",
-        company: item.hiringOrganization ? item.hiringOrganization.name : null,
-        company_url: item.hiringOrganization ? item.hiringOrganization.sameAs || null : null,
-        location,
-        location_postcode: locationObj ? locationObj.postalCode || null : null,
-        salary_text: salary.text,
-        salary_min: salary.min,
-        salary_max: salary.max,
-        salary_period: salary.period,
-        job_type: jobType,
-        description: stripHtml(item.description || ""),
-        posted_at: item.datePosted || null,
-        expires_at: item.validThrough || null,
-        apply_url: item.url || window.location.href,
-      });
+      const job = mapJsonLdJobPosting(item);
+      if (job) jobs.push(job);
     }
   }
-  return null;
+  return jobs;
 }
 
 // Search-results listing: DOM fallback for job cards (best-effort selectors;
@@ -125,9 +132,9 @@ function extractCardsFromDom() {
 }
 
 const run = debounce(() => {
-  const jsonLdJob = extractJsonLdJobPosting();
-  if (jsonLdJob) {
-    sendJob(jsonLdJob);
+  const jsonLdJobs = extractJsonLdJobPostings();
+  if (jsonLdJobs.length) {
+    sendJobs(jsonLdJobs);
   } else {
     sendJobs(extractCardsFromDom());
   }
@@ -136,3 +143,4 @@ const run = debounce(() => {
 run();
 const observer = new MutationObserver(run);
 observer.observe(document.documentElement, { childList: true, subtree: true });
+window.addEventListener("pagehide", () => observer.disconnect());
